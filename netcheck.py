@@ -1153,13 +1153,19 @@ def check_hardening(cfg: Config, measured: dict | None = None,
             ports = read_loop_ports(client)
             if ports:
                 loop_ports[name] = ports
-        except SnmpError as exc:
+        except (SnmpError, ValueError) as exc:
             findings.append(f"{name}: SNMP unavailable ({exc})")
-    if not findings:
+    if not findings and not loop_ports:
         return CheckResult(9, "Hardening audit", Status.PASS,
                            detail="all switches meet the baseline"), loop_ports
-    status = Status.FAIL if loop_ports else Status.WARN
-    return CheckResult(9, "Hardening audit", status, detail="; ".join(findings[:6]),
+    loop_detail = "; ".join(f"{name} loop port {p}"
+                            for name, ports in loop_ports.items() for p in ports)
+    detail = "; ".join(part for part in (loop_detail, "; ".join(findings[:6])) if part)
+    if loop_ports:
+        return CheckResult(9, "Hardening audit", Status.FAIL, detail=detail,
+                           likely_cause="A switch port is in loop state.",
+                           suggested_fix="Unplug the looped port, then re-run."), loop_ports
+    return CheckResult(9, "Hardening audit", Status.WARN, detail=detail,
                        suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
                                      "RSTP, DHCP Server Screening)."), loop_ports
 

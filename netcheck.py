@@ -973,7 +973,7 @@ def resolve_ifindex_ports(client) -> dict[int, int]:
 
 def find_fdb_port(client, mac: str) -> int | None:
     suffix = "." + mac_to_oid_suffix(mac)
-    for base in (BRIDGE_FDB_OID, QB_FDB_OID):
+    for base in (QB_FDB_OID, BRIDGE_FDB_OID):
         try:
             rows = client.walk(base)
         except SnmpError:

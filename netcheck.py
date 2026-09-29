@@ -1058,5 +1058,111 @@ def check_storm_hints(cfg: Config, gateway_result: PingResult,
     return CheckResult(8, "Loop/storm hints", Status.PASS, detail="no storm indicators")
 
 
+@dataclass
+class HardeningState:
+    lbd_enabled: bool = False
+    lbd_recover_time: int = 60
+    storm_enabled: bool = False
+    storm_type: int = 1
+    storm_threshold: int = 0
+    rstp_enabled: bool = False
+    rstp_priority: int = 32768
+    safeguard_enabled: bool = True
+    dhcp_screen_ports: list[int] = field(default_factory=list)
+    dos_enabled: bool = False
+
+
+def evaluate_hardening(state: HardeningState,
+                       measured: dict | None = None) -> list[str]:
+    findings: list[str] = []
+    if not state.lbd_enabled:
+        findings.append("Loopback Detection: disabled (recommended: enabled, recover time 0)")
+    elif state.lbd_recover_time != 0:
+        findings.append(f"Loopback Detection: recover time {state.lbd_recover_time} "
+                        "(recommended: 0)")
+    recommended_threshold = (measured or {}).get("threshold", 20000)
+    if not state.storm_enabled:
+        findings.append("Storm Control: disabled (recommended: enabled, type 3)")
+    elif state.storm_type != 3:
+        findings.append(f"Storm Control: type {state.storm_type} (recommended: 3)")
+    elif state.storm_threshold != recommended_threshold:
+        findings.append(f"Storm Control: threshold {state.storm_threshold} "
+                        f"(recommended: {recommended_threshold})")
+    if not state.rstp_enabled:
+        findings.append("RSTP: disabled (recommended: enabled)")
+    if not state.safeguard_enabled:
+        findings.append("Safeguard Engine: disabled (recommended: enabled)")
+    if not state.dhcp_screen_ports:
+        findings.append("DHCP Server Screening: not enabled on access ports")
+    if not state.dos_enabled:
+        findings.append("DoS Prevention: disabled (optional, recommended: enabled)")
+    return findings
+
+
+def read_hardening_state(client) -> HardeningState:
+    state = HardeningState()
+    values = client.get([
+        "1.3.6.1.4.1.171.10.76.20.1.17.1",
+        "1.3.6.1.4.1.171.10.76.20.1.17.4",
+        "1.3.6.1.4.1.171.10.76.20.1.13.3.1",
+        "1.3.6.1.4.1.171.10.76.20.1.13.3.2",
+        "1.3.6.1.4.1.171.10.76.20.1.13.3.3",
+        "1.3.6.1.4.1.171.10.76.20.1.6.1.1",
+        "1.3.6.1.4.1.171.10.76.20.1.6.1.3",
+        "1.3.6.1.4.1.171.10.76.20.1.1.8",
+        "1.3.6.1.4.1.171.10.76.20.1.14.7.1",
+        "1.3.6.1.4.1.171.10.76.20.1.99.1",
+    ])
+    state.lbd_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.17.1") == 1
+    state.lbd_recover_time = int(values.get("1.3.6.1.4.1.171.10.76.20.1.17.4") or 0)
+    state.storm_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.1") == 1
+    state.storm_type = int(values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.2") or 1)
+    state.storm_threshold = int(values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.3") or 0)
+    state.rstp_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.6.1.1") == 1
+    state.rstp_priority = int(values.get("1.3.6.1.4.1.171.10.76.20.1.6.1.3") or 32768)
+    state.safeguard_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.1.8") == 1
+    ports = values.get("1.3.6.1.4.1.171.10.76.20.1.14.7.1")
+    state.dhcp_screen_ports = decode_port_list(ports) if isinstance(ports, bytes) else []
+    state.dos_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.99.1") == 1
+    return state
+
+
+def read_loop_ports(client) -> list[int]:
+    loop: list[int] = []
+    for oid, value in client.walk("1.3.6.1.4.1.171.10.76.20.1.17.5.1.3"):
+        if value == 2:
+            loop.append(int(oid.rsplit(".", 1)[1]))
+    return loop
+
+
+def check_hardening(cfg: Config, measured: dict | None = None,
+                    client_factory=SnmpClient
+                    ) -> tuple[CheckResult, dict[str, list[int]]]:
+    if not cfg.snmp_community:
+        return (CheckResult(9, "Hardening audit", Status.WARN,
+                            detail="SNMP community not set; cannot audit switches"),
+                {})
+    findings: list[str] = []
+    loop_ports: dict[str, list[int]] = {}
+    for name, host in cfg.switches.items():
+        try:
+            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            state = read_hardening_state(client)
+            for finding in evaluate_hardening(state, measured):
+                findings.append(f"{name}: {finding}")
+            ports = read_loop_ports(client)
+            if ports:
+                loop_ports[name] = ports
+        except SnmpError as exc:
+            findings.append(f"{name}: SNMP unavailable ({exc})")
+    if not findings:
+        return CheckResult(9, "Hardening audit", Status.PASS,
+                           detail="all switches meet the baseline"), loop_ports
+    status = Status.FAIL if loop_ports else Status.WARN
+    return CheckResult(9, "Hardening audit", status, detail="; ".join(findings[:6]),
+                       suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
+                                     "RSTP, DHCP Server Screening)."), loop_ports
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

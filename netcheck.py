@@ -1038,5 +1038,25 @@ def trace_mac(cfg: Config, mac: str, client_factory=SnmpClient,
                        detail=f"{trail + ' ' if trail else ''}(loop?)")
 
 
+def check_storm_hints(cfg: Config, gateway_result: PingResult,
+                      loop_ports: dict[str, list[int]], client_factory=SnmpClient
+                      ) -> CheckResult:
+    if loop_ports:
+        listing = "; ".join(f"{name} port {p}" for name, ports in loop_ports.items()
+                            for p in ports)
+        return CheckResult(8, "Loop/storm hints", Status.FAIL, detail=f"loop on {listing}",
+                           likely_cause="Loopback Detection reports a port in loop state.",
+                           suggested_fix="Unplug the looped port; see the trace/hardening checks.")
+    jitter = None
+    if gateway_result.max_ms is not None and gateway_result.min_ms is not None:
+        jitter = gateway_result.max_ms - gateway_result.min_ms
+    if gateway_result.loss_pct > 5 or (jitter is not None and jitter > 30):
+        return CheckResult(8, "Loop/storm hints", Status.WARN,
+                           detail=f"gateway loss {gateway_result.loss_pct:.0f}% jitter {jitter}",
+                           likely_cause="Possible broadcast storm or flapping link.",
+                           suggested_fix="Check LBD loop status and error counters on ports 23-27.")
+    return CheckResult(8, "Loop/storm hints", Status.PASS, detail="no storm indicators")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

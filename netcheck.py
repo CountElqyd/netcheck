@@ -54,18 +54,27 @@ class Reporter:
 
     def render(self) -> str:
         lines: list[str] = []
-        for r in self.results:
-            tag = f"[{r.status.value}]"
+        heads = [f"{r.id:>2}. {r.title}" for r in self.results]
+        title_width = max((len(h) for h in heads), default=0)
+        for head, r in zip(heads, self.results):
+            plain_tag = f"[{r.status.value}]"
+            tag = plain_tag
             if self.color:
-                tag = f"{_COLORS[r.status]}{tag}{_RESET}"
-            line = f"{tag} {r.id}. {r.title}"
+                tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}"
+            line = f"{tag} {head:<{title_width}}"
             if r.detail:
-                line += f"  - {r.detail}"
+                line += f" - {r.detail}"
             lines.append(line)
-            if r.likely_cause:
-                lines.append("    Likely cause: " + r.likely_cause)
-            if r.suggested_fix:
-                lines.append("    Suggested fix: " + r.suggested_fix)
+            if r.likely_cause or r.suggested_fix:
+                lines.append("    Likely cause: " + (r.likely_cause or "-"))
+                lines.append("    Suggested fix: " + (r.suggested_fix or "-"))
+        if self.results:
+            counts = {s: sum(1 for r in self.results if r.status is s) for s in Status}
+            lines.append("")
+            lines.append(f"Summary: {counts[Status.PASS]} PASS · {counts[Status.WARN]} WARN · "
+                         f"{counts[Status.FAIL]} FAIL  (exit code {self.exit_code()})")
+            lines.append("Legend:  PASS healthy  ·  WARN needs attention  ·  "
+                         "FAIL broken — fix FAILs first")
         return "\n".join(lines)
 
 
@@ -863,58 +872,65 @@ class RogueResponder:
     vendor: str | None = None
 
 
-def parse_nmap_dhcp(text: str) -> list[RogueResponder]:
-    rows: list[RogueResponder] = []
-    server = re.findall(r"Server IP:\s*([\d.]+)", text)
-    macs = re.findall(r"MAC:\s*([0-9A-Fa-f:]{11,17})", text)
-    for index, ip in enumerate(server):
-        mac = macs[index] if index < len(macs) else ""
-        rows.append(RogueResponder(ip, mac, lookup_vendor(mac) if mac else None))
-    return rows
+@dataclass
+class DhcpProbe:
+    responders: list[RogueResponder] | None
+    reason: str = ""
 
 
-def scapy_dhcp_discover(timeout: float = 5.0) -> list[RogueResponder] | None:
+def scapy_dhcp_discover(timeout: float = 5.0) -> DhcpProbe:
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
-        return None
+        return DhcpProbe(None, "scapy not installed")
     try:
         packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
                   / UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=b"\x00" * 16)
                   / DHCP(options=[("message-type", "discover"), "end"]))
         answered, _ = srp(packet, timeout=timeout, verbose=False)
-    except Exception:
-        return None
+    except PermissionError:
+        return DhcpProbe(None, "raw sockets denied (needs root or CAP_NET_RAW)")
+    except OSError as exc:
+        return DhcpProbe(None, f"raw sockets unavailable ({exc})")
+    except Exception as exc:  # noqa: BLE001 - scapy raises assorted types
+        return DhcpProbe(None, f"scapy probe failed: {exc}")
     found: dict[str, RogueResponder] = {}
     for _sent, received in answered:
         if received.haslayer(DHCP):
             server_ip = received[IP].src
             mac = received[Ether].src
             found[server_ip] = RogueResponder(server_ip, mac, lookup_vendor(mac))
-    return list(found.values())
+    return DhcpProbe(list(found.values()))
 
 
-def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
-                      ) -> tuple[CheckResult, list[str]]:
+def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
         discover_fn = lambda cfg=None: scapy_dhcp_discover()
-    responders = discover_fn(cfg)
-    if responders is None:
-        _, out, _ = runner(["nmap", "--script", "broadcast-dhcp-discover",
-                            "-e", "any"], timeout=15)
-        responders = parse_nmap_dhcp(out)
+    probe = discover_fn(cfg)
+    if probe.responders is None:
+        return (CheckResult(6, "Rogue DHCP", Status.WARN,
+                            detail=f"not tested: {probe.reason}",
+                            likely_cause="The rogue-DHCP probe could not run.",
+                            suggested_fix="Install scapy (uv run --with scapy netcheck.py) "
+                                          "and run as root/administrator."),
+                [])
+    responders = probe.responders
     if not responders:
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
-                            detail="no DHCP server answered or could not determine "
-                                   "(needs root/scapy/nmap)"),
+                            detail="probed via scapy; no DHCP server answered on this segment",
+                            likely_cause="No DHCP offer was seen, though this host holds a lease.",
+                            suggested_fix="Re-run while a client renews; confirm the tool runs "
+                                          "as root/administrator."),
                 [])
     rogues = [r for r in responders if r.server_ip != cfg.gateway]
     if not rogues:
         return (CheckResult(6, "Rogue DHCP", Status.PASS,
-                            detail="only the gateway answered"), [])
+                            detail=f"probed via scapy; only the trusted gateway {cfg.gateway} "
+                                   "answered"),
+                [])
     listing = ", ".join(f"{r.server_ip} ({r.mac}{', ' + r.vendor if r.vendor else ''})"
                         for r in rogues)
-    return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=listing,
+    return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=f"via scapy: {listing}",
                         likely_cause="A non-gateway DHCP server is handing out leases.",
                         suggested_fix="Trace the responder MAC (check 7) and unplug it; "
                                       "enable DHCP Server Screening on access ports."),
@@ -1327,6 +1343,18 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
             tty=None, runner=run_command, verbose: bool = False) -> None:
+    def _run_check(check_id: int, title: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - isolate each fabric check
+            if verbose:
+                import traceback
+                traceback.print_exc()
+            reporter.add(CheckResult(check_id, title, Status.WARN,
+                                     detail=f"check failed: {exc}",
+                                     likely_cause="An unexpected error interrupted this check.",
+                                     suggested_fix="Re-run with --verbose for details."))
+
     try:
         layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
@@ -1337,26 +1365,57 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         if quick:
             return
 
-        reporter.add(check_switches(cfg, ping_fn=layer_ping))
-        rogue_result, rogue_macs = check_rogue_dhcp(cfg, runner=runner)
-        reporter.add(rogue_result)
+        _run_check(5, "Switches",
+                   lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
-        measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)
-        per_switch_measured = next(iter(measured.values()), None)
-        hardening_result, loop_ports = check_hardening(cfg, measured=per_switch_measured)
-        reporter.add(hardening_result)
+        rogue_macs: list[str] = []
+        rogue_status: Status | None = None
 
-        gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
-        reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+        def _rogue() -> None:
+            nonlocal rogue_status
+            result, macs = check_rogue_dhcp(cfg)
+            reporter.add(result)
+            rogue_status = result.status
+            rogue_macs.extend(macs)
 
-        for mac in rogue_macs:
-            reporter.add(trace_mac(cfg, mac))
+        _run_check(6, "Rogue DHCP", _rogue)
+
+        loop_ports: dict[str, list[int]] = {}
+
+        def _hardening() -> None:
+            measured = ({} if no_measure
+                        else measure_storm_threshold(cfg, sample_seconds=sample))
+            per_switch_measured = next(iter(measured.values()), None)
+            result, ports = check_hardening(cfg, measured=per_switch_measured)
+            reporter.add(result)
+            loop_ports.update(ports)
+
+        _run_check(9, "Hardening audit", _hardening)
+
+        def _storm() -> None:
+            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
+            reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+
+        _run_check(8, "Loop/storm hints", _storm)
+
+        def _trace() -> None:
+            if rogue_macs:
+                for mac in rogue_macs:
+                    reporter.add(trace_mac(cfg, mac))
+            elif rogue_status is Status.PASS:
+                reporter.add(CheckResult(7, "MAC trace", Status.PASS,
+                                         detail="no rogue devices to trace"))
+            else:
+                reporter.add(CheckResult(7, "MAC trace", Status.WARN,
+                                         detail="skipped: no rogue MACs to trace"))
+
+        _run_check(7, "MAC trace", _trace)
 
         fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
         if fixed:
             reporter.add(CheckResult(99, "Fixes applied", Status.PASS,
                                      detail="; ".join(fixed)))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - last-resort guard (Phase A, fixes)
         if verbose:
             import traceback
             traceback.print_exc()

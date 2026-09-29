@@ -524,7 +524,9 @@ fixes (§10).
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
 **Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 9, 8, 7.
-Traces (7) are printed once per rogue MAC found by check 6.
+Check 7 emits once per run: a trace line per rogue MAC found by check 6, otherwise
+a single `no rogue devices to trace` (check 6 PASS) or `skipped: no rogue MACs to
+trace` (otherwise) result.
 
 ### 7.2 Status meanings
 

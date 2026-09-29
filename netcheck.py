@@ -935,19 +935,15 @@ class TelnetConnection:
             self.sock.sendall(bytes(response))
 
     def login(self, user: str, password: str) -> str:
-        banner = self._read_until_idle()
-        if b"assword" not in banner and b"ogin" not in banner:
-            self.run_command(user, wait=0.5)
-        else:
-            self.run_command(user, wait=0.5)
+        self._read_until_idle()
+        self.run_command(user, wait=0.5)
         return self.run_command(password, wait=1.0).decode(errors="replace")
 
     def run_command(self, cmd: str, wait: float = 1.0) -> bytes:
         if self.sock is None:
             raise TelnetError("not connected")
         self.sock.sendall(cmd.encode() + b"\r\n")
-        import time as _time
-        _time.sleep(wait)
+        time.sleep(wait)
         return self._read_until_idle()
 
     def close(self) -> None:

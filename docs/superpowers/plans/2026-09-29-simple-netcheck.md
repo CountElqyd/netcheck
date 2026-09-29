@@ -21,6 +21,7 @@
 - **Hardening baseline values** are copied from spec §7 exactly (LBD recover time `0`, storm type `3`, `factor=4`, `floor=10000`, RSTP `dlink1` priority `4096`).
 - **Exit codes:** `0` = no FAIL, `1` = WARN present, `2` = FAIL present.
 - **No placeholders:** every step below contains real code.
+- **Module order:** `netcheck.py` must end with the `if __name__ == "__main__": raise SystemExit(main())` guard. Every task from 2 onward inserts its new code immediately BEFORE that guard, so the guard stays last and `python netcheck.py` works as a script.
 
 ---
 
@@ -169,6 +170,14 @@ class TestReporter(unittest.TestCase):
         self.assertIn("Likely cause: rogue server", text)
         self.assertIn("Suggested fix: unplug it", text)
 
+    def test_render_emits_each_cause(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.FAIL, likely_cause="cause one"))
+        r.add(CheckResult(2, "B", Status.FAIL, likely_cause="cause two"))
+        text = r.render()
+        self.assertIn("cause one", text)
+        self.assertIn("cause two", text)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -232,13 +241,10 @@ class Reporter:
             if r.detail:
                 line += f"  - {r.detail}"
             lines.append(line)
-        causes = [r for r in self.results if r.likely_cause]
-        fixes = [r for r in self.results if r.suggested_fix]
-        if causes:
-            lines.append("")
-            lines.append("Likely cause: " + causes[0].likely_cause)
-        if fixes:
-            lines.append("Suggested fix: " + fixes[0].suggested_fix)
+            if r.likely_cause:
+                lines.append("    Likely cause: " + r.likely_cause)
+            if r.suggested_fix:
+                lines.append("    Suggested fix: " + r.suggested_fix)
         return "\n".join(lines)
 ```
 
@@ -302,6 +308,13 @@ class TestConfig(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_repr_hides_secrets(self):
+        cfg = load_config(env={"NETCHECK_SNMP_COMMUNITY": "s3cret",
+                               "NETCHECK_SWITCH_PASS": "hunter2"})
+        text = repr(cfg)
+        self.assertNotIn("s3cret", text)
+        self.assertNotIn("hunter2", text)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -330,10 +343,10 @@ class Config:
     dns_servers: list[str] = field(default_factory=lambda: ["58.71.2.8", "45.63.30.117"])
     public_dns: list[str] = field(default_factory=lambda: ["1.1.1.1", "8.8.8.8"])
     domain: str = "example.com"
-    snmp_community: str = ""
+    snmp_community: str = field(default="", repr=False)
     snmp_version: str = "2c"
     switch_user: str = "admin"
-    switch_pass: str = ""
+    switch_pass: str = field(default="", repr=False)
     storm_safety_factor: int = 4
     storm_floor_kbps: int = 10000
     timeout: float = 3.0
@@ -592,7 +605,9 @@ import unittest
 from netcheck import (
     SnmpClient,
     _encode_request,
+    _oid_key,
     _parse_response,
+    ber_decode_tlv,
     decode_port_list,
     decode_value,
 )
@@ -600,8 +615,8 @@ from netcheck import (
 
 class TestSnmp(unittest.TestCase):
     def test_port_list_decode(self):
-        # 0b1000_0001, 0b0000_0001 => bit0 of octet0 = port1, bit7 of octet0 = port8, port9
-        self.assertEqual(decode_port_list(b"\x81\x01"), [1, 8, 9])
+        # MSB of octet0 = port 1, LSB of octet0 = port 8, LSB of octet1 = port 16
+        self.assertEqual(decode_port_list(b"\x81\x01"), [1, 8, 16])
         self.assertEqual(decode_port_list(b"\x00\x00"), [])
 
     def test_decode_value_integer(self):
@@ -614,6 +629,37 @@ class TestSnmp(unittest.TestCase):
         self.assertEqual(version, 1)
         self.assertEqual(req_id, 42)
         self.assertEqual(varbinds[0][0], "1.3.6.1.2.1.1.1.0")
+
+    def test_encode_request_context_tag(self):
+        packed = _encode_request("public", 1, 42, 0xA0, ["1.3.6.1.2.1.1.1.0"])
+        _, message, _ = ber_decode_tlv(packed)
+        offset = 0
+        _, _, offset = ber_decode_tlv(message, offset)
+        _, _, offset = ber_decode_tlv(message, offset)
+        tag, _, _ = ber_decode_tlv(message, offset)
+        self.assertEqual(tag, 0xA0)
+
+    def test_oid_key_numeric_order(self):
+        self.assertLess(_oid_key("1.3.6.1.2.2.9"), _oid_key("1.3.6.1.2.2.10"))
+
+    def test_exception_tags_decode_to_none(self):
+        for tag in (0x80, 0x81, 0x82):
+            self.assertIsNone(decode_value(tag, b""))
+
+    def test_get_bulk_field_count(self):
+        packed = _encode_request("public", 1, 42, 0xA5, ["1.3.6.1.2.1.2.2.1.2"],
+                                 max_repetitions=25)
+        _, message, _ = ber_decode_tlv(packed)
+        offset = 0
+        _, _, offset = ber_decode_tlv(message, offset)
+        _, _, offset = ber_decode_tlv(message, offset)
+        tag, pdu, _ = ber_decode_tlv(message, offset)
+        self.assertEqual(tag, 0xA5)
+        po, fields = 0, 0
+        while po < len(pdu):
+            _, _, po = ber_decode_tlv(pdu, po)
+            fields += 1
+        self.assertEqual(fields, 4)
 
     def test_client_construction(self):
         client = SnmpClient("10.90.90.90", "public")
@@ -662,7 +708,7 @@ def decode_value(tag: int, value: bytes) -> object:
         return ber_decode_integer(value)
     if tag == TAG_OCTET:
         return value
-    if tag == TAG_NULL:
+    if tag in (TAG_NULL, 0x80, 0x81, 0x82):
         return None
     if tag == TAG_OID:
         return ber_decode_oid(value)
@@ -678,28 +724,27 @@ def decode_port_list(value: bytes) -> list[int]:
     return ports
 
 
-def _apply_pdu(pdu_type: int, request_id: int, oids: list[str],
+def _apply_pdu(pdu_tag: int, request_id: int, oids: list[str],
                max_repetitions: int | None) -> bytes:
-    if pdu_type == PDU_GET_BULK:
-        head = [
-            ber_encode_integer(pdu_type),
-            ber_encode_integer(request_id),
-            ber_encode_integer(0),
-            ber_encode_integer(max_repetitions or 25),
-            ber_encode_integer(0),
-        ]
-    else:
-        head = [
-            ber_encode_integer(pdu_type),
-            ber_encode_integer(request_id),
-            ber_encode_integer(0),
-            ber_encode_integer(0),
-        ]
     varbinds = b"".join(
         ber_encode_sequence([ber_encode_oid(oid), ber_encode_null()]) for oid in oids
     )
-    head.append(ber_encode_sequence([varbinds]))
-    return ber_encode_sequence(head)
+    if pdu_tag == PDU_GET_BULK:
+        fields = [
+            ber_encode_integer(request_id),
+            ber_encode_integer(0),
+            ber_encode_integer(25 if max_repetitions is None else max_repetitions),
+            ber_encode_sequence([varbinds]),
+        ]
+    else:
+        fields = [
+            ber_encode_integer(request_id),
+            ber_encode_integer(0),
+            ber_encode_integer(0),
+            ber_encode_sequence([varbinds]),
+        ]
+    body = b"".join(fields)
+    return bytes([pdu_tag]) + ber_encode_length(len(body)) + body
 
 
 def _encode_request(community: str, version_int: int, request_id: int, pdu_type: int,
@@ -728,19 +773,28 @@ def _parse_response(data: bytes) -> tuple[int, int, list[tuple[str, object]]]:
     offset = 0
     _, version_bytes, offset = ber_decode_tlv(message, offset)
     _, _community, offset = ber_decode_tlv(message, offset)
-    _, pdu, _ = ber_decode_tlv(message, offset)
+    pdu_tag, pdu, _ = ber_decode_tlv(message, offset)
     pdu_offset = 0
-    _, _pdu_type, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
     _, request_bytes, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    _, _err_status, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    _, _err_index, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    _, first_field, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    if pdu_tag != PDU_GET_BULK:
+        error_status = ber_decode_integer(first_field)
+        if error_status:
+            raise SnmpError(f"SNMP error-status {error_status}")
+    _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
     _, varbind_list_bytes, _ = ber_decode_tlv(pdu, pdu_offset)
     return (ber_decode_integer(version_bytes), ber_decode_integer(request_bytes),
             _parse_varbinds(varbind_list_bytes))
 
 
+def _oid_key(oid: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in oid.split("."))
+
+
 def _oid_in_subtree(oid: str, base: str) -> bool:
-    return oid == base or oid.startswith(base + ".")
+    oid_parts = _oid_key(oid)
+    base_parts = _oid_key(base)
+    return oid_parts[:len(base_parts)] == base_parts
 
 
 class SnmpClient:
@@ -774,7 +828,9 @@ class SnmpClient:
         self.request_id = (self.request_id + 1) & 0x7FFFFFFF
         packet = _encode_request(self.community, self.version_int, self.request_id,
                                  pdu_type, oids, max_repetitions)
-        _version, _req_id, varbinds = _parse_response(self._exchange(packet))
+        _version, req_id, varbinds = _parse_response(self._exchange(packet))
+        if req_id != self.request_id:
+            raise SnmpError(f"request id mismatch: sent {self.request_id}, got {req_id}")
         return varbinds
 
     def get(self, oids: list[str]) -> dict[str, object]:
@@ -785,7 +841,7 @@ class SnmpClient:
         if not varbinds:
             return None
         next_oid, value = varbinds[0]
-        if value is None or next_oid <= oid:
+        if value is None or _oid_key(next_oid) <= _oid_key(oid):
             return None
         return next_oid, value
 
@@ -929,9 +985,11 @@ git commit -m "feat: add embedded OUI vendor table"
 
 ```python
 # tests/test_ping.py
+import sys
 import unittest
+from unittest import mock
 
-from netcheck import PingResult, parse_ping_output
+from netcheck import parse_ping_output, ping, ping_argv, run_command
 
 LINUX = """PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.
 64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=1.23 ms
@@ -978,6 +1036,30 @@ class TestPing(unittest.TestCase):
         self.assertEqual(r.loss_pct, 25.0)
         self.assertEqual(r.avg_ms, 11.0)
 
+    def test_ping_argv_per_platform(self):
+        with mock.patch("sys.platform", "win32"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-n", "3", "8.8.8.8"])
+        with mock.patch("sys.platform", "linux"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-c", "3", "8.8.8.8"])
+        with mock.patch("sys.platform", "darwin"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-c", "3", "8.8.8.8"])
+
+    def test_ping_uses_injected_runner(self):
+        seen = {}
+
+        def fake_runner(args, timeout=10.0):
+            seen["args"] = args
+            return 0, "3 packets transmitted, 3 received, 0% packet loss", ""
+
+        result = ping("192.168.1.1", count=3, runner=fake_runner)
+        self.assertEqual(result.received, 3)
+        self.assertIn("192.168.1.1", seen["args"])
+
+    def test_run_command_captures_output(self):
+        code, out, _ = run_command([sys.executable, "-c", "print('hi')"])
+        self.assertEqual(code, 0)
+        self.assertIn("hi", out)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1008,9 +1090,7 @@ def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
 def ping_argv(host: str, count: int) -> list[str]:
     if sys.platform.startswith("win"):
         return ["ping", "-n", str(count), host]
-    if sys.platform == "darwin":
-        return ["ping", "-c", str(count), "-t", "5", host]
-    return ["ping", "-c", str(count), "-w", "5", host]
+    return ["ping", "-c", str(count), host]
 
 
 @dataclass
@@ -1133,6 +1213,13 @@ class TestDns(unittest.TestCase):
         header = struct.pack(">HHHHHH", 1, 0x8180, 0, 0, 0, 0)
         self.assertEqual(parse_dns_a(header), [])
 
+    def test_truncated_response_returns_empty(self):
+        self.assertEqual(parse_dns_a(b"\x00"), [])
+
+    def test_malformed_question_count_does_not_raise(self):
+        header = struct.pack(">HHHHHH", 1, 0x8180, 9, 0, 0, 0)
+        self.assertEqual(parse_dns_a(header), [])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1157,13 +1244,14 @@ def build_dns_query(name: str, txid: int) -> bytes:
 
 
 def _skip_dns_name(data: bytes, offset: int) -> int:
-    while True:
+    while offset < len(data):
         length = data[offset]
         if length == 0:
             return offset + 1
         if length & 0xC0:
             return offset + 2
         offset += 1 + length
+    return len(data)
 
 
 def parse_dns_a(data: bytes) -> list[str]:
@@ -1202,7 +1290,10 @@ def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float
     finally:
         sock.close()
     elapsed = (time.monotonic() - started) * 1000
-    answers = parse_dns_a(data)
+    try:
+        answers = parse_dns_a(data)
+    except (IndexError, struct.error):
+        answers = []
     return bool(answers), elapsed, answers
 ```
 
@@ -1236,7 +1327,7 @@ git commit -m "feat: add raw UDP DNS query and A-record parser"
 # tests/test_local_config.py
 import unittest
 
-from netcheck import Config, Status, check_local_config, parse_ipconfig_windows
+from netcheck import Config, Status, check_local_config, parse_ipconfig_windows, parse_linux
 
 
 IPCONFIG = """
@@ -1251,8 +1342,15 @@ Ethernet adapter Ethernet:
 IPCONFIG_APIPA = """
    IPv4 Address. . . . . . . . . . . : 169.254.10.10(Preferred)
    Subnet Mask . . . . . . . . . . . : 255.255.0.0
-   Default Gateway . . . . . . . . . :
+   Default Gateway . . . . . . . . . : 192.168.1.1
 """
+
+LINUX_ROUTE = "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.50 metric 100"
+LINUX_ADDR = """1: lo: <LOOPBACK,UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: eth0: <BROADCAST,UP> mtu 1500
+    inet 192.168.1.50/24 brd 192.168.1.255 scope global eth0"""
+LINUX_RESOLV = "nameserver 58.71.2.8\nnameserver 45.63.30.117\n"
 
 
 class TestLocalConfig(unittest.TestCase):
@@ -1269,7 +1367,14 @@ class TestLocalConfig(unittest.TestCase):
     def test_check_apipa_fails(self):
         result = check_local_config(Config(), local_fn=lambda: parse_ipconfig_windows(IPCONFIG_APIPA))
         self.assertIs(result.status, Status.FAIL)
-        self.assertIn("169.254", result.detail or "")
+        self.assertIn("APIPA", result.likely_cause or "")
+
+    def test_parse_linux_skips_loopback(self):
+        lc = parse_linux(LINUX_ROUTE, LINUX_ADDR, LINUX_RESOLV)
+        self.assertEqual(lc.ip, "192.168.1.50")
+        self.assertEqual(lc.gateway, "192.168.1.1")
+        self.assertEqual(lc.interface, "eth0")
+        self.assertEqual(lc.dns, ["58.71.2.8", "45.63.30.117"])
 
 
 if __name__ == "__main__":
@@ -1313,13 +1418,13 @@ def parse_ipconfig_windows(text: str) -> LocalConfig:
 
 def parse_linux(route_text: str, addr_text: str, resolv_text: str) -> LocalConfig:
     lc = LocalConfig()
-    gw = re.search(r"default via ([\d.]+)", route_text)
+    gw = re.search(r"default via ([\d.]+)(?: dev (\S+))?", route_text)
     if gw:
         lc.gateway = gw.group(1)
-    dev = re.search(r"default via [\d.]+ dev (\S+)", route_text)
-    if dev:
-        lc.interface = dev.group(1)
-    addr = re.search(r"inet ([\d.]+)/(\d+)", addr_text)
+        lc.interface = gw.group(2)
+    addr = re.search(r"inet ([\d.]+)/(\d+) .*scope global", addr_text)
+    if not addr:
+        addr = re.search(r"inet (?!127\.|169\.254\.)([\d.]+)/(\d+)", addr_text)
     if addr:
         lc.ip = addr.group(1)
         lc.mask = "/" + addr.group(2)
@@ -1418,7 +1523,17 @@ git commit -m "feat: add local config detection and check 1"
 # tests/test_checks_layer.py
 import unittest
 
-from netcheck import Config, PingResult, Status, check_dns, check_gateway, check_internet
+from netcheck import (
+    Config,
+    LocalConfig,
+    PingResult,
+    Reporter,
+    Status,
+    check_dns,
+    check_gateway,
+    check_internet,
+    run_layer_checks,
+)
 
 
 def _ping(host, **kw):
@@ -1447,6 +1562,57 @@ class TestLayerChecks(unittest.TestCase):
         result = check_dns(Config(), query_fn=q)
         self.assertIs(result.status, Status.FAIL)
         self.assertIn("ISP DNS", result.likely_cause or "")
+
+
+def ok_local():
+    return LocalConfig(ip="192.168.1.50", gateway="192.168.1.1", dns=["1.1.1.1"])
+
+
+class TestRunLayerChecks(unittest.TestCase):
+    def test_local_fail_stops(self):
+        reporter = Reporter(color=False)
+        calls = {"ping": 0, "query": 0}
+
+        def pf(host, **kw):
+            calls["ping"] += 1
+            return PingResult(host=host)
+
+        def qf(*a, **k):
+            calls["query"] += 1
+            return True, 1.0, ["x"]
+
+        run_layer_checks(Config(), reporter, local_fn=lambda: LocalConfig(ip=None),
+                         ping_fn=pf, query_fn=qf)
+        self.assertEqual([r.id for r in reporter.results], [1])
+        self.assertEqual((calls["ping"], calls["query"]), (0, 0))
+
+    def test_gateway_fail_stops(self):
+        reporter = Reporter(color=False)
+        calls = {"query": 0}
+
+        def pf(host, **kw):
+            return PingResult(host=host, transmitted=10, received=0, loss_pct=100.0)
+
+        def qf(*a, **k):
+            calls["query"] += 1
+            return True, 1.0, ["x"]
+
+        run_layer_checks(Config(), reporter, local_fn=ok_local, ping_fn=pf, query_fn=qf)
+        self.assertEqual([r.id for r in reporter.results], [1, 2])
+        self.assertEqual(calls["query"], 0)
+
+    def test_all_pass_runs_all(self):
+        reporter = Reporter(color=False)
+
+        def pf(host, **kw):
+            return PingResult(host=host, transmitted=10, received=10, loss_pct=0.0,
+                              min_ms=1.0, avg_ms=1.5, max_ms=2.0)
+
+        def qf(*a, **k):
+            return True, 1.0, ["93.184.216.34"]
+
+        run_layer_checks(Config(), reporter, local_fn=ok_local, ping_fn=pf, query_fn=qf)
+        self.assertEqual([r.id for r in reporter.results], [1, 2, 3, 4])
 
 
 if __name__ == "__main__":
@@ -1682,7 +1848,12 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.PASS)
 
     def test_unknown_warns(self):
-        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: None)
+        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: None,
+                                     runner=lambda *a, **k: (1, "", ""))
+        self.assertIs(result.status, Status.WARN)
+
+    def test_no_responders_warns(self):
+        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: [])
         self.assertIs(result.status, Status.WARN)
 
 
@@ -1740,17 +1911,17 @@ def scapy_dhcp_discover(timeout: float = 5.0) -> list[RogueResponder] | None:
 def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
                       ) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
-        discover_fn = scapy_dhcp_discover
+        discover_fn = lambda cfg=None: scapy_dhcp_discover()
     responders = discover_fn(cfg)
     if responders is None:
-        responders = []
         _, out, _ = runner(["nmap", "--script", "broadcast-dhcp-discover",
                             "-e", "any"], timeout=15)
         responders = parse_nmap_dhcp(out)
-        if not responders:
-            return (CheckResult(6, "Rogue DHCP", Status.WARN,
-                                detail="could not determine (needs root/scapy/nmap)"),
-                    [])
+    if not responders:
+        return (CheckResult(6, "Rogue DHCP", Status.WARN,
+                            detail="no DHCP server answered or could not determine "
+                                   "(needs root/scapy/nmap)"),
+                [])
     rogues = [r for r in responders if r.server_ip != cfg.gateway]
     if not rogues:
         return (CheckResult(6, "Rogue DHCP", Status.PASS,
@@ -1891,19 +2062,15 @@ class TelnetConnection:
             self.sock.sendall(bytes(response))
 
     def login(self, user: str, password: str) -> str:
-        banner = self._read_until_idle()
-        if b"assword" not in banner and b"ogin" not in banner:
-            self.run_command(user, wait=0.5)
-        else:
-            self.run_command(user, wait=0.5)
+        self._read_until_idle()
+        self.run_command(user, wait=0.5)
         return self.run_command(password, wait=1.0).decode(errors="replace")
 
     def run_command(self, cmd: str, wait: float = 1.0) -> bytes:
         if self.sock is None:
             raise TelnetError("not connected")
         self.sock.sendall(cmd.encode() + b"\r\n")
-        import time as _time
-        _time.sleep(wait)
+        time.sleep(wait)
         return self._read_until_idle()
 
     def close(self) -> None:
@@ -1942,33 +2109,77 @@ git commit -m "feat: add socket Telnet helper and debug info parser"
 # tests/test_trace.py
 import unittest
 
-from netcheck import Status, trace_mac
+from netcheck import (
+    BASE_PORT_IFINDEX_OID,
+    BRIDGE_FDB_OID,
+    QB_FDB_OID,
+    Status,
+    trace_mac,
+)
 
-FDB_OID = "1.3.6.1.2.1.17.4.3.1.2"
-BASE_OID = "1.3.6.1.2.1.17.1.4.1.2"
+MAC = "00:1E:58:AA:BB:CC"
+SUFFIX = ".0.30.88.170.187.204"
 
 
-class FakeClient:
+def _cfg():
+    return type("C", (), {"switches": {"dlink1": "10.90.90.90"},
+                          "snmp_community": "public", "timeout": 3.0,
+                          "switch_user": "admin", "switch_pass": "x"})()
+
+
+class QbClient:
     def __init__(self, host, community, **kw):
-        self.host = host
+        pass
 
     def walk(self, base_oid):
-        if base_oid == FDB_OID:
-            return [("1.3.6.1.2.1.17.4.3.1.2.0.30.88.170.187.204", 5)]
-        if base_oid == BASE_OID:
-            return [(f"{BASE_OID}.5", 5)]
+        if base_oid == QB_FDB_OID:
+            return [(QB_FDB_OID + SUFFIX, 5)]
+        if base_oid == BASE_PORT_IFINDEX_OID:
+            return [(f"{BASE_PORT_IFINDEX_OID}.5", 101)]
+        return []
+
+
+class BridgeFallbackClient:
+    def __init__(self, host, community, **kw):
+        pass
+
+    def walk(self, base_oid):
+        if base_oid == BRIDGE_FDB_OID:
+            return [(BRIDGE_FDB_OID + SUFFIX, 7)]
+        if base_oid == BASE_PORT_IFINDEX_OID:
+            return [(f"{BASE_PORT_IFINDEX_OID}.7", 7)]
+        return []
+
+
+class BothTablesClient:
+    def __init__(self, host, community, **kw):
+        pass
+
+    def walk(self, base_oid):
+        if base_oid == QB_FDB_OID:
+            return [(QB_FDB_OID + SUFFIX, 5)]
+        if base_oid == BRIDGE_FDB_OID:
+            return [(BRIDGE_FDB_OID + SUFFIX, 9)]
+        if base_oid == BASE_PORT_IFINDEX_OID:
+            return [(f"{BASE_PORT_IFINDEX_OID}.5", 5), (f"{BASE_PORT_IFINDEX_OID}.9", 9)]
         return []
 
 
 class TestTrace(unittest.TestCase):
-    def test_trace_lands_on_edge_port(self):
-        cfg = type("C", (), {"switches": {"dlink1": "10.90.90.90"},
-                             "snmp_community": "public", "timeout": 3.0,
-                             "switch_user": "admin", "switch_pass": "x"})()
-        result = trace_mac(cfg, "00:1E:58:AA:BB:CC", client_factory=FakeClient)
+    def test_qbridge_first_and_ifindex_translated(self):
+        result = trace_mac(_cfg(), MAC, client_factory=QbClient)
         self.assertIs(result.status, Status.PASS)
         self.assertIn("dlink1", result.detail)
+        self.assertIn("port 101", result.detail)
+
+    def test_bridge_fallback_when_qbridge_empty(self):
+        result = trace_mac(_cfg(), MAC, client_factory=BridgeFallbackClient)
+        self.assertIn("port 7", result.detail)
+
+    def test_qbridge_preferred_over_bridge(self):
+        result = trace_mac(_cfg(), MAC, client_factory=BothTablesClient)
         self.assertIn("port 5", result.detail)
+        self.assertNotIn("port 9", result.detail)
 
 
 if __name__ == "__main__":
@@ -2005,7 +2216,7 @@ def resolve_ifindex_ports(client) -> dict[int, int]:
 
 def find_fdb_port(client, mac: str) -> int | None:
     suffix = "." + mac_to_oid_suffix(mac)
-    for base in (BRIDGE_FDB_OID, QB_FDB_OID):
+    for base in (QB_FDB_OID, BRIDGE_FDB_OID):
         try:
             rows = client.walk(base)
         except SnmpError:
@@ -2177,7 +2388,7 @@ git commit -m "feat: add check 8 loop and storm hints"
 # tests/test_hardening.py
 import unittest
 
-from netcheck import HardeningState, Status, evaluate_hardening
+from netcheck import Config, HardeningState, Status, check_hardening, evaluate_hardening
 
 BASELINE_GOOD = HardeningState(
     lbd_enabled=True, lbd_recover_time=0, storm_enabled=True, storm_type=3,
@@ -2203,7 +2414,60 @@ class TestHardening(unittest.TestCase):
         from dataclasses import replace
         state = replace(BASELINE_GOOD, storm_threshold=30000)
         self.assertEqual(evaluate_hardening(state, measured={"threshold": 30000}), [])
-        self.assertTrue(evaluate_hardening(state))  # default 20000 would flag it
+        self.assertTrue(evaluate_hardening(state))
+
+
+LOOP_OID = "1.3.6.1.4.1.171.10.76.20.1.17.5.1.3"
+
+COMPLIANT_VALUES = {
+    "1.3.6.1.4.1.171.10.76.20.1.17.1": 1,
+    "1.3.6.1.4.1.171.10.76.20.1.17.4": 0,
+    "1.3.6.1.4.1.171.10.76.20.1.13.3.1": 1,
+    "1.3.6.1.4.1.171.10.76.20.1.13.3.2": 3,
+    "1.3.6.1.4.1.171.10.76.20.1.13.3.3": 20000,
+    "1.3.6.1.4.1.171.10.76.20.1.6.1.1": 1,
+    "1.3.6.1.4.1.171.10.76.20.1.6.1.3": 32768,
+    "1.3.6.1.4.1.171.10.76.20.1.1.8": 1,
+    "1.3.6.1.4.1.171.10.76.20.1.14.7.1": b"\x81",
+    "1.3.6.1.4.1.171.10.76.20.1.99.1": 1,
+}
+
+
+class CompliantClient:
+    def __init__(self, host, community, **kw):
+        pass
+
+    def get(self, oids):
+        return dict(COMPLIANT_VALUES)
+
+    def walk(self, base_oid):
+        return []
+
+
+class LoopingCompliantClient(CompliantClient):
+    def walk(self, base_oid):
+        if base_oid == LOOP_OID:
+            return [(f"{LOOP_OID}.7", 2)]
+        return []
+
+
+class TestCheckHardening(unittest.TestCase):
+    def test_compliant_switch_passes(self):
+        result, loops = check_hardening(Config(snmp_community="public"),
+                                        client_factory=CompliantClient)
+        self.assertIs(result.status, Status.PASS)
+        self.assertEqual(loops, {})
+
+    def test_loop_port_forces_fail_even_when_compliant(self):
+        result, loops = check_hardening(Config(snmp_community="public"),
+                                        client_factory=LoopingCompliantClient)
+        self.assertIs(result.status, Status.FAIL)
+        self.assertEqual(loops, {"dlink1": [7]})
+
+    def test_no_community_warns(self):
+        result, loops = check_hardening(Config(), client_factory=CompliantClient)
+        self.assertIs(result.status, Status.WARN)
+        self.assertEqual(loops, {})  # default 20000 would flag it
 
 
 if __name__ == "__main__":
@@ -2314,13 +2578,19 @@ def check_hardening(cfg: Config, measured: dict | None = None,
             ports = read_loop_ports(client)
             if ports:
                 loop_ports[name] = ports
-        except SnmpError as exc:
+        except (SnmpError, ValueError) as exc:
             findings.append(f"{name}: SNMP unavailable ({exc})")
-    if not findings:
+    if not findings and not loop_ports:
         return CheckResult(9, "Hardening audit", Status.PASS,
                            detail="all switches meet the baseline"), loop_ports
-    status = Status.FAIL if loop_ports else Status.WARN
-    return CheckResult(9, "Hardening audit", status, detail="; ".join(findings[:6]),
+    loop_detail = "; ".join(f"{name} loop port {p}"
+                            for name, ports in loop_ports.items() for p in ports)
+    detail = "; ".join(part for part in (loop_detail, "; ".join(findings[:6])) if part)
+    if loop_ports:
+        return CheckResult(9, "Hardening audit", Status.FAIL, detail=detail,
+                           likely_cause="A switch port is in loop state.",
+                           suggested_fix="Unplug the looped port, then re-run."), loop_ports
+    return CheckResult(9, "Hardening audit", Status.WARN, detail=detail,
                        suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
                                      "RSTP, DHCP Server Screening)."), loop_ports
 ```
@@ -2354,21 +2624,22 @@ git commit -m "feat: add check 9 hardening audit and evaluator"
 ```python
 # tests/test_storm_measure.py
 import unittest
+from unittest import mock
 
-from netcheck import ceil_to_64, compute_threshold, measure_storm_threshold
+from netcheck import Config, ceil_to_64, compute_threshold, measure_storm_threshold
 
 
 class FakeCounterClient:
-    reads = 0
+    calls = 0
 
     def __init__(self, host, community, **kw):
-        self.host = host
+        pass
 
     def walk(self, base_oid):
-        FakeCounterClient.reads += 1
-        delta = 0 if FakeCounterClient.reads == 1 else 10_000
         if base_oid == "1.3.6.1.2.1.31.1.1.1.9":
-            return [("1.3.6.1.2.1.31.1.1.1.9.1", delta)]
+            FakeCounterClient.calls += 1
+            value = 100_000 if FakeCounterClient.calls == 1 else 200_000
+            return [("1.3.6.1.2.1.31.1.1.1.9.1", value)]
         if base_oid == "1.3.6.1.2.1.31.1.1.1.8":
             return [("1.3.6.1.2.1.31.1.1.1.8.1", 0)]
         return []
@@ -2381,15 +2652,22 @@ class TestStormMeasure(unittest.TestCase):
         self.assertEqual(ceil_to_64(65), 128)
 
     def test_compute_threshold_floor_and_cap(self):
-        self.assertEqual(compute_threshold(100, 1_000_000), 10000)   # floor
-        self.assertEqual(compute_threshold(100_000, 1_000_000), 400000)  # 4x
-        self.assertEqual(compute_threshold(900_000, 1_000_000), 800000)  # cap 0.8x
+        self.assertEqual(compute_threshold(100, 1_000_000), 10000)
+        self.assertEqual(compute_threshold(100_000, 1_000_000), 400000)
+        self.assertEqual(compute_threshold(900_000, 1_000_000), 800000)
 
     def test_measure_empty_without_community(self):
-        cfg = type("C", (), {"switches": {"dlink1": "10.90.90.90"},
-                             "snmp_community": "", "timeout": 1.0,
-                             "storm_safety_factor": 4, "storm_floor_kbps": 10000})()
+        cfg = Config(snmp_community="", switches={"dlink1": "10.90.90.90"})
         self.assertEqual(measure_storm_threshold(cfg, sample_seconds=0), {})
+
+    def test_measure_computes_threshold(self):
+        FakeCounterClient.calls = 0
+        cfg = Config(snmp_community="public", switches={"dlink1": "10.90.90.90"},
+                     storm_safety_factor=4, storm_floor_kbps=10000)
+        with mock.patch("netcheck.time.sleep"):
+            result = measure_storm_threshold(cfg, sample_seconds=10,
+                                             client_factory=FakeCounterClient)
+        self.assertEqual(result, {"dlink1": {"threshold": 20480}})
 
 
 if __name__ == "__main__":

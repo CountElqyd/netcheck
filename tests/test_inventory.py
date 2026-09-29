@@ -112,5 +112,62 @@ class TestCollectDevices(unittest.TestCase):
         self.assertEqual(result.devices, {})
 
 
+from netcheck import (
+    CheckResult,
+    Status,
+    check_device_inventory,
+    format_inventory,
+)
+
+
+class TestFormatInventory(unittest.TestCase):
+    def test_marks_only_rogue_mac(self):
+        devs = Devicelist(devices={"dlink1": {MAC_A: 5, MAC_B: 8}})
+        text = format_inventory(devs, [MAC_A])
+        lines = [ln for ln in text.splitlines() if "port" in ln]
+        self.assertEqual(len(lines), 2)
+        rogue_line = next(ln for ln in lines if "AA:BB:CC" in ln)
+        ok_line = next(ln for ln in lines if "9A:BC:DE" in ln)
+        self.assertIn("ROGUE", rogue_line)
+        self.assertNotIn("ROGUE", ok_line)
+
+    def test_sorts_rows_by_port(self):
+        devs = Devicelist(devices={"dlink1": {MAC_A: 9, MAC_B: 3}})
+        lines = [ln for ln in format_inventory(devs, []).splitlines() if "port" in ln]
+        self.assertIn(" 3 ", lines[0])
+        self.assertIn(" 9 ", lines[1])
+
+    def test_includes_vendor(self):
+        devs = Devicelist(devices={"dlink1": {"00:1E:58:11:22:33": 5}})
+        self.assertIn("D-Link", format_inventory(devs, []))
+
+    def test_error_lines_are_appended(self):
+        devs = Devicelist(devices={"dlink2": {}}, errors=["dlink2: SNMP unavailable (x)"])
+        self.assertIn("dlink2: SNMP unavailable", format_inventory(devs, []))
+
+
+class TestCheckDeviceInventory(unittest.TestCase):
+    def test_fail_when_rogue_present(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
+        result = check_device_inventory(cfg, [MAC_A], client_factory=FakeClient)
+        self.assertIs(result.status, Status.FAIL)
+        self.assertEqual(result.id, 7)
+        self.assertIn("Device inventory", result.title)
+
+    def test_pass_when_no_rogue(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
+        result = check_device_inventory(cfg, [], client_factory=FakeClient)
+        self.assertIs(result.status, Status.PASS)
+
+    def test_warn_without_snmp(self):
+        result = check_device_inventory(Config(), [], client_factory=FakeClient)
+        self.assertIs(result.status, Status.WARN)
+
+    def test_warn_when_all_switches_error(self):
+        cfg = Config(switches={"dlink1": "10.90.90.91"}, snmp_community="public")
+        result = check_device_inventory(cfg, [], client_factory=ExplodingClient)
+        self.assertIs(result.status, Status.WARN)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -809,5 +809,70 @@ def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
                        suggested_fix="Reseat the cascade/uplink cable and confirm the mgmt IP.")
 
 
+@dataclass
+class RogueResponder:
+    server_ip: str
+    mac: str = ""
+    vendor: str | None = None
+
+
+def parse_nmap_dhcp(text: str) -> list[RogueResponder]:
+    rows: list[RogueResponder] = []
+    server = re.findall(r"Server IP:\s*([\d.]+)", text)
+    macs = re.findall(r"MAC:\s*([0-9A-Fa-f:]{11,17})", text)
+    for index, ip in enumerate(server):
+        mac = macs[index] if index < len(macs) else ""
+        rows.append(RogueResponder(ip, mac, lookup_vendor(mac) if mac else None))
+    return rows
+
+
+def scapy_dhcp_discover(timeout: float = 5.0) -> list[RogueResponder] | None:
+    try:
+        from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
+    except ImportError:
+        return None
+    try:
+        packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
+                  / UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=b"\x00" * 16)
+                  / DHCP(options=[("message-type", "discover"), "end"]))
+        answered, _ = srp(packet, timeout=timeout, verbose=False)
+    except Exception:
+        return None
+    found: dict[str, RogueResponder] = {}
+    for _sent, received in answered:
+        if received.haslayer(DHCP):
+            server_ip = received[IP].src
+            mac = received[Ether].src
+            found[server_ip] = RogueResponder(server_ip, mac, lookup_vendor(mac))
+    return list(found.values())
+
+
+def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
+                      ) -> tuple[CheckResult, list[str]]:
+    if discover_fn is None:
+        discover_fn = scapy_dhcp_discover
+    responders = discover_fn(cfg)
+    if responders is None:
+        responders = []
+        _, out, _ = runner(["nmap", "--script", "broadcast-dhcp-discover",
+                            "-e", "any"], timeout=15)
+        responders = parse_nmap_dhcp(out)
+        if not responders:
+            return (CheckResult(6, "Rogue DHCP", Status.WARN,
+                                detail="could not determine (needs root/scapy/nmap)"),
+                    [])
+    rogues = [r for r in responders if r.server_ip != cfg.gateway]
+    if not rogues:
+        return (CheckResult(6, "Rogue DHCP", Status.PASS,
+                            detail="only the gateway answered"), [])
+    listing = ", ".join(f"{r.server_ip} ({r.mac}{', ' + r.vendor if r.vendor else ''})"
+                        for r in rogues)
+    return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=listing,
+                        likely_cause="A non-gateway DHCP server is handing out leases.",
+                        suggested_fix="Trace the responder MAC (check 7) and unplug it; "
+                                      "enable DHCP Server Screening on access ports."),
+            [r.mac for r in rogues if r.mac])
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

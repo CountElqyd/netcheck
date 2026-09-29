@@ -1,0 +1,13 @@
+[netcheck]
+# Secrets: prefer environment variables (NETCHECK_SNMP_COMMUNITY, NETCHECK_SWITCH_PASS).
+# This file is gitignored when named netcheck.ini; do not commit real secrets.
+gateway = 192.168.1.1
+dns = 58.71.2.8,45.63.30.117
+domain = example.com
+snmp_community = public
+snmp_version = 2c
+switch_user = admin
+switch_pass =
+storm_safety_factor = 4
+storm_floor_kbps = 10000
+switches = dlink1=10.90.90.90,dlink2=10.90.90.91,dlink3=10.90.90.92,dlink4=10.90.90.93,dlink5=10.90.90.94

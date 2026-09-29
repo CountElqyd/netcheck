@@ -326,7 +326,7 @@ printed or written to the log. The storm-control recommendation reads INI keys
 | `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default 30). |
 | `--no-measure` | Skip rate sampling; use the static storm-control baseline. |
 | `--timeout N` | Per-network-operation timeout (default 3 s). |
-| `--verbose` | Show raw command output / SNMP errors. |
+| `--verbose` | Show full tracebacks and raw errors on internal failures. |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY). |
 | `--version` | Print the tool version and exit. |
 

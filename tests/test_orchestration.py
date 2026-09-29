@@ -22,6 +22,19 @@ class TestOrchestration(unittest.TestCase):
     def test_main_version(self):
         self.assertEqual(netcheck.main(["--version"]), 0)
 
+    def test_default_config_path(self):
+        self.assertEqual(netcheck.build_parser().parse_args([]).config, "netcheck.ini")
+
+    def test_run_all_contains_unexpected_error(self):
+        reporter = netcheck.Reporter(color=False)
+        original = netcheck.check_switches
+        netcheck.check_switches = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.check_switches = original
+        self.assertTrue(any(r.id == 98 for r in reporter.results))
+
 
 if __name__ == "__main__":
     unittest.main()

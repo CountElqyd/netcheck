@@ -30,6 +30,14 @@ class TestConfig(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_malformed_switches_ignored(self):
+        cfg = load_config(env={"NETCHECK_SWITCHES": "dlink1=10.0.0.1,bad,"})
+        self.assertEqual(cfg.switches, {"dlink1": "10.0.0.1"})
+
+    def test_non_numeric_storm_uses_default(self):
+        cfg = load_config(env={"NETCHECK_STORM_SAFETY_FACTOR": "abc"})
+        self.assertEqual(cfg.storm_safety_factor, 4)
+
     def test_repr_hides_secrets(self):
         cfg = load_config(env={"NETCHECK_SNMP_COMMUNITY": "s3cret",
                                "NETCHECK_SWITCH_PASS": "hunter2"})

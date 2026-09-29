@@ -33,6 +33,12 @@ class TestDns(unittest.TestCase):
         header = struct.pack(">HHHHHH", 1, 0x8180, 9, 0, 0, 0)
         self.assertEqual(parse_dns_a(header), [])
 
+    def test_truncated_rdata_no_raise(self):
+        header = struct.pack(">HHHHHH", 1, 0x8180, 1, 1, 0, 0)
+        q = b"\x07example\x03com\x00" + struct.pack(">HH", 1, 1)
+        answer = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + b"\x5d\xb8"
+        self.assertEqual(parse_dns_a(header + q + answer), [])
+
 
 if __name__ == "__main__":
     unittest.main()

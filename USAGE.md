@@ -51,7 +51,13 @@ rogue-DHCP probe with `uv run --with scapy netcheck.py`.
 `--quick` (checks 1-4) · `--log` · `--config PATH` · `--no-fix` · `--sample SECONDS`
 · `--no-measure` · `--timeout N` · `--verbose` · `--no-color` · `--version`.
 
-## 6. Interpreting output
+## 6. Optional fixes
+
+After a failing run the tool offers three per-action `y/N` fixes (skip all with
+`--no-fix`): flush the DNS cache, renew the DHCP lease, and set this PC's DNS to
+`1.1.1.1`/`8.8.8.8`. It never changes the router or any switch.
+
+## 7. Interpreting output
 
 One `[PASS]/[WARN]/[FAIL]` line per check, then "Likely cause" and "Suggested fix".
 Exit codes: `0` clean, `1` warnings, `2` failures. Scenarios:
@@ -62,12 +68,12 @@ Exit codes: `0` clean, `1` warnings, `2` failures. Scenarios:
 - **Rogue DHCP FAIL**: trace the reported MAC, unplug that device, enable screening.
 - **Loop/storm FAIL**: a port is in loop state; unplug it, then re-check hardening.
 
-## 7. Troubleshooting the tool
+## 8. Troubleshooting the tool
 
 - SNMP errors: confirm SNMP is enabled and the community/management subnet is right.
 - scapy without rights: the probe degrades to `nmap`, then to WARN.
 - Telnet format drift: `--verbose` captures a sample; do not trust an unverified parse.
 
-## 8. Security
+## 9. Security
 
 Credentials/community never leave env/INI and are never logged; the tool is read-only.

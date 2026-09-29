@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"netcheck {__version__}")
     parser.add_argument("--quick", action="store_true", help="checks 1-4 only")
     parser.add_argument("--log", action="store_true", help="save a timestamped report")
-    parser.add_argument("--config", help="path to an INI config file")
+    parser.add_argument("--config", default="netcheck.ini", help="path to an INI config file")
     parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
     parser.add_argument("--sample", type=float, default=30.0,
                         help="counter-sampling window for storm thresholds (seconds)")
@@ -82,7 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="skip rate sampling; use the static storm baseline")
     parser.add_argument("--timeout", type=float, default=3.0,
                         help="per-operation network timeout (seconds)")
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Show full tracebacks on internal errors")
     parser.add_argument("--no-color", action="store_true")
     return parser
 
@@ -98,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, no_measure=args.no_measure,
-                sample=args.sample, allow_fix=not args.no_fix)
+                sample=args.sample, allow_fix=not args.no_fix, verbose=args.verbose)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -146,6 +147,23 @@ _ENV_MAP = {
 }
 
 
+def _to_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_switches(text):
+    result = {}
+    for token in text.replace(" ", "").split(","):
+        if "=" in token:
+            name, _, ip = token.partition("=")
+            if name:
+                result[name] = ip
+    return result
+
+
 def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -> Config:
     env = os.environ if env is None else env
     cfg = Config()
@@ -161,12 +179,14 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
             cfg.switch_user = section.get("switch_user", cfg.switch_user)
             cfg.switch_pass = section.get("switch_pass", cfg.switch_pass)
             cfg.domain = section.get("domain", cfg.domain)
-            cfg.storm_safety_factor = int(section.get("storm_safety_factor", cfg.storm_safety_factor))
-            cfg.storm_floor_kbps = int(section.get("storm_floor_kbps", cfg.storm_floor_kbps))
+            cfg.storm_safety_factor = _to_int(section.get("storm_safety_factor",
+                                                           cfg.storm_safety_factor),
+                                              cfg.storm_safety_factor)
+            cfg.storm_floor_kbps = _to_int(section.get("storm_floor_kbps",
+                                                       cfg.storm_floor_kbps),
+                                           cfg.storm_floor_kbps)
             if section.get("switches"):
-                cfg.switches = dict(
-                    item.split("=", 1) for item in section["switches"].replace(" ", "").split(",")
-                )
+                cfg.switches = _parse_switches(section["switches"])
             if section.get("dns"):
                 cfg.dns_servers = section["dns"].replace(" ", "").split(",")
 
@@ -174,12 +194,10 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
         if env_key in env:
             value: object = env[env_key]
             if attr in ("storm_safety_factor", "storm_floor_kbps"):
-                value = int(value)
+                value = _to_int(value, getattr(cfg, attr))
             setattr(cfg, attr, value)
     if "NETCHECK_SWITCHES" in env:
-        cfg.switches = dict(
-            item.split("=", 1) for item in env["NETCHECK_SWITCHES"].replace(" ", "").split(",")
-        )
+        cfg.switches = _parse_switches(env["NETCHECK_SWITCHES"])
     if "NETCHECK_DNS" in env:
         cfg.dns_servers = env["NETCHECK_DNS"].replace(" ", "").split(",")
     return cfg
@@ -617,7 +635,7 @@ def parse_dns_a(data: bytes) -> list[str]:
         offset += 10
         rdata = data[offset:offset + rdlen]
         offset += rdlen
-        if rtype == 1 and rdlen == 4:
+        if rtype == 1 and rdlen == 4 and len(rdata) == 4:
             answers.append(socket.inet_ntoa(rdata))
     return answers
 
@@ -637,7 +655,7 @@ def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float
     elapsed = (time.monotonic() - started) * 1000
     try:
         answers = parse_dns_a(data)
-    except (IndexError, struct.error):
+    except (IndexError, struct.error, OSError):
         answers = []
     return bool(answers), elapsed, answers
 
@@ -1306,34 +1324,43 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
-            tty=None, runner=run_command) -> None:
-    layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
-    layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
-        server, name, timeout=kw.get("timeout", cfg.timeout))
-    run_layer_checks(cfg, reporter,
-                     local_fn=lambda: detect_local_config(runner),
-                     ping_fn=layer_ping, query_fn=layer_query)
-    if quick:
-        return
+            tty=None, runner=run_command, verbose: bool = False) -> None:
+    try:
+        layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
+        layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
+            server, name, timeout=kw.get("timeout", cfg.timeout))
+        run_layer_checks(cfg, reporter,
+                         local_fn=lambda: detect_local_config(runner),
+                         ping_fn=layer_ping, query_fn=layer_query)
+        if quick:
+            return
 
-    reporter.add(check_switches(cfg, ping_fn=layer_ping))
-    rogue_result, rogue_macs = check_rogue_dhcp(cfg, runner=runner)
-    reporter.add(rogue_result)
+        reporter.add(check_switches(cfg, ping_fn=layer_ping))
+        rogue_result, rogue_macs = check_rogue_dhcp(cfg, runner=runner)
+        reporter.add(rogue_result)
 
-    measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)
-    per_switch_measured = next(iter(measured.values()), None)
-    hardening_result, loop_ports = check_hardening(cfg, measured=per_switch_measured)
-    reporter.add(hardening_result)
+        measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)
+        per_switch_measured = next(iter(measured.values()), None)
+        hardening_result, loop_ports = check_hardening(cfg, measured=per_switch_measured)
+        reporter.add(hardening_result)
 
-    gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
-    reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+        gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
+        reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
 
-    for mac in rogue_macs:
-        reporter.add(trace_mac(cfg, mac))
+        for mac in rogue_macs:
+            reporter.add(trace_mac(cfg, mac))
 
-    fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
-    if fixed:
-        reporter.add(CheckResult(99, "Fixes applied", Status.PASS, detail="; ".join(fixed)))
+        fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
+        if fixed:
+            reporter.add(CheckResult(99, "Fixes applied", Status.PASS,
+                                     detail="; ".join(fixed)))
+    except Exception as exc:
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        reporter.add(CheckResult(98, "Internal error", Status.WARN, detail=str(exc),
+                                 likely_cause="An unexpected error interrupted the checks.",
+                                 suggested_fix="Re-run with --verbose for details."))
 
 
 if __name__ == "__main__":

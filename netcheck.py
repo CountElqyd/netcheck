@@ -292,28 +292,27 @@ def decode_port_list(value: bytes) -> list[int]:
     return ports
 
 
-def _apply_pdu(pdu_type: int, request_id: int, oids: list[str],
+def _apply_pdu(pdu_tag: int, request_id: int, oids: list[str],
                max_repetitions: int | None) -> bytes:
-    if pdu_type == PDU_GET_BULK:
-        head = [
-            ber_encode_integer(pdu_type),
-            ber_encode_integer(request_id),
-            ber_encode_integer(0),
-            ber_encode_integer(max_repetitions or 25),
-            ber_encode_integer(0),
-        ]
-    else:
-        head = [
-            ber_encode_integer(pdu_type),
-            ber_encode_integer(request_id),
-            ber_encode_integer(0),
-            ber_encode_integer(0),
-        ]
     varbinds = b"".join(
         ber_encode_sequence([ber_encode_oid(oid), ber_encode_null()]) for oid in oids
     )
-    head.append(ber_encode_sequence([varbinds]))
-    return ber_encode_sequence(head)
+    if pdu_tag == PDU_GET_BULK:
+        fields = [
+            ber_encode_integer(request_id),
+            ber_encode_integer(0),
+            ber_encode_integer(max_repetitions or 25),
+            ber_encode_sequence([varbinds]),
+        ]
+    else:
+        fields = [
+            ber_encode_integer(request_id),
+            ber_encode_integer(0),
+            ber_encode_integer(0),
+            ber_encode_sequence([varbinds]),
+        ]
+    body = b"".join(fields)
+    return bytes([pdu_tag]) + ber_encode_length(len(body)) + body
 
 
 def _encode_request(community: str, version_int: int, request_id: int, pdu_type: int,
@@ -342,12 +341,15 @@ def _parse_response(data: bytes) -> tuple[int, int, list[tuple[str, object]]]:
     offset = 0
     _, version_bytes, offset = ber_decode_tlv(message, offset)
     _, _community, offset = ber_decode_tlv(message, offset)
-    _, pdu, _ = ber_decode_tlv(message, offset)
+    pdu_tag, pdu, _ = ber_decode_tlv(message, offset)
     pdu_offset = 0
-    _, _pdu_type, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
     _, request_bytes, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    _, _err_status, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    _, _err_index, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    if pdu_tag == PDU_GET_BULK:
+        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    else:
+        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
     _, varbind_list_bytes, _ = ber_decode_tlv(pdu, pdu_offset)
     return (ber_decode_integer(version_bytes), ber_decode_integer(request_bytes),
             _parse_varbinds(varbind_list_bytes))

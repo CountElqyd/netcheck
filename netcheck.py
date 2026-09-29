@@ -1219,5 +1219,63 @@ def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
                 if data}
 
 
+from typing import TextIO
+
+
+def open_tty() -> TextIO | None:
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return open("/dev/tty", "r+") if sys.platform != "win32" else open("CONIN$", "r+")
+    except OSError:
+        return None
+
+
+def prompt_yes_no(question: str, tty=None) -> bool:
+    stream = tty
+    if stream is None:
+        stream = open_tty()
+    if stream is None:
+        return False
+    if getattr(stream, "isatty", None) is not None and stream.isatty():
+        stream.write(question + " [y/N] ")
+        stream.flush()
+    answer = stream.readline()
+    return answer.strip().lower() in ("y", "yes")
+
+
+def dns_servers(cfg: Config) -> tuple[str, str]:
+    return "1.1.1.1", "8.8.8.8"
+
+
+def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
+                runner=run_command) -> list[str]:
+    applied: list[str] = []
+    if not allow_fix:
+        return applied
+    if prompt_yes_no("Flush the DNS cache?", tty=tty):
+        if sys.platform.startswith("win"):
+            runner(["ipconfig", "/flushdns"])
+        elif sys.platform == "darwin":
+            runner(["dscacheutil", "-flushcache"])
+            runner(["killall", "-HUP", "mDNSResponder"])
+        else:
+            runner(["resolvectl", "flush-caches"])
+        applied.append("flushed DNS cache")
+    if prompt_yes_no("Renew the DHCP lease?", tty=tty):
+        if sys.platform.startswith("win"):
+            runner(["ipconfig", "/renew"])
+        elif sys.platform == "darwin":
+            runner(["ipconfig", "set", "en0", "DHCP"])
+        else:
+            runner(["dhclient", "-r"])
+            runner(["dhclient"])
+        applied.append("renewed DHCP lease")
+    primary, secondary = dns_servers(cfg)
+    if prompt_yes_no(f"Set this PC's DNS to {primary}/{secondary}?", tty=tty):
+        applied.append(f"requested DNS change to {primary}/{secondary}")
+    return applied
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

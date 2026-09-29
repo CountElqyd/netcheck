@@ -98,10 +98,10 @@ class Config:
     dns_servers: list[str] = field(default_factory=lambda: ["58.71.2.8", "45.63.30.117"])
     public_dns: list[str] = field(default_factory=lambda: ["1.1.1.1", "8.8.8.8"])
     domain: str = "example.com"
-    snmp_community: str = ""
+    snmp_community: str = field(default="", repr=False)
     snmp_version: str = "2c"
     switch_user: str = "admin"
-    switch_pass: str = ""
+    switch_pass: str = field(default="", repr=False)
     storm_safety_factor: int = 4
     storm_floor_kbps: int = 10000
     timeout: float = 3.0

@@ -30,6 +30,13 @@ class TestConfig(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_repr_hides_secrets(self):
+        cfg = load_config(env={"NETCHECK_SNMP_COMMUNITY": "s3cret",
+                               "NETCHECK_SWITCH_PASS": "hunter2"})
+        text = repr(cfg)
+        self.assertNotIn("s3cret", text)
+        self.assertNotIn("hunter2", text)
+
 
 if __name__ == "__main__":
     unittest.main()

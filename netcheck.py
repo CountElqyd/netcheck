@@ -1064,6 +1064,49 @@ def find_fdb_port(client, mac: str) -> int | None:
     return None
 
 
+@dataclass
+class Devicelist:
+    devices: dict[str, dict[str, int]] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
+def _walk_fdb(client) -> list[tuple[str, object, str]]:
+    error: SnmpError | None = None
+    for base in (QB_FDB_OID, BRIDGE_FDB_OID):
+        try:
+            rows = client.walk(base)
+        except SnmpError as exc:
+            error = exc
+            rows = []
+        if rows:
+            return [(oid, value, base) for oid, value in rows]
+    if error is not None:
+        raise error
+    return []
+
+
+def collect_devices(cfg: Config, client_factory=SnmpClient) -> Devicelist:
+    result = Devicelist()
+    if not cfg.snmp_community:
+        return result
+    for name, host in cfg.switches.items():
+        result.devices[name] = {}
+        try:
+            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            rows = _walk_fdb(client)
+            if not rows:
+                continue
+            ifindex_map = resolve_ifindex_ports(client)
+            for oid, value, base in rows:
+                mac = mac_from_oid_suffix(oid, base)
+                if mac is None or not isinstance(value, int):
+                    continue
+                result.devices[name][mac] = ifindex_map.get(value, value)
+        except (SnmpError, ValueError) as exc:
+            result.errors.append(f"{name}: SNMP unavailable ({exc})")
+    return result
+
+
 def debug_info_lookup(cfg: Config, host: str, mac: str,
                       telnet_factory=TelnetConnection) -> int | None:
     factory = telnet_factory or TelnetConnection

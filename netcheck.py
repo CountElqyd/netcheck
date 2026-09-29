@@ -431,10 +431,6 @@ class SnmpClient:
         return results
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 OUI_TABLE: dict[str, str] = {
     "001B11": "D-Link", "001E58": "D-Link", "001CF0": "D-Link", "14D64D": "D-Link",
     "1CBDB9": "D-Link", "340804": "D-Link", "5CD998": "D-Link", "909448": "D-Link",
@@ -470,3 +466,7 @@ def lookup_vendor(mac: str) -> str | None:
     if len(normalized) < 6:
         return None
     return OUI_TABLE.get(normalized[:6])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

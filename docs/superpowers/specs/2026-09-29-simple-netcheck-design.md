@@ -326,7 +326,7 @@ printed or written to the log. The storm-control recommendation reads INI keys
 | `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default 30). |
 | `--no-measure` | Skip rate sampling; use the static storm-control baseline. |
 | `--timeout N` | Per-network-operation timeout (default 3 s). |
-| `--verbose` | Show raw command output / SNMP errors. |
+| `--verbose` | Show full tracebacks and raw errors on internal failures. |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY). |
 | `--version` | Print the tool version and exit. |
 
@@ -335,12 +335,14 @@ printed or written to the log. The storm-control recommendation reads INI keys
 ```
 [PASS] 1. Local config  — 192.168.1.50/24 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
 [FAIL] 6. Rogue DHCP    — responder 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
+    Likely cause: A rogue DHCP server is handing out leases on the office LAN.
+    Suggested fix: Trace aa:bb:cc:dd:ee:ff with check 7 and unplug it; enable DHCP
+                   Server Screening (Security) with 192.168.1.1 trusted.
 [WARN] 9. Hardening     — dlink1 LBD off; storm control off; RSTP off
-...
-Likely cause: A rogue DHCP server is handing out leases on the office LAN.
-Suggested fix: Trace aa:bb:cc:dd:ee:ff with check 7 and unplug it.
-               Then enable DHCP Server Screening (Security) with 192.168.1.1 trusted.
-```
+    Suggested fix: Apply the baseline in USAGE.md.
+
+Each result's likely cause and suggested fix print beneath its own line (a result with
+a fix but no cause prints only the fix).
 
 ## 10. Error handling and degradation
 

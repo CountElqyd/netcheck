@@ -1137,8 +1137,6 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            likely_cause="No switch returned an FDB.",
                            suggested_fix="Confirm SNMP is enabled and reachable on each switch.")
     detail = f"{total} devices on {len(devs.devices)} switches"
-    if devs.errors:
-        detail += "\n" + table
     return CheckResult(7, title, Status.PASS, detail=detail + ("\n" + table if table else ""))
 
 

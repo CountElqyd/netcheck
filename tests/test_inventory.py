@@ -159,6 +159,15 @@ class TestCheckDeviceInventory(unittest.TestCase):
         result = check_device_inventory(cfg, [], client_factory=FakeClient)
         self.assertIs(result.status, Status.PASS)
 
+    def test_pass_with_partial_error_prints_table_once(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90", "dlink2": "10.90.90.91"},
+                     snmp_community="public")
+        result = check_device_inventory(cfg, [], client_factory=ExplodingClient)
+        self.assertIs(result.status, Status.PASS)
+        self.assertEqual(result.detail.count("port"), 1)
+        self.assertEqual(result.detail.count(MAC_A), 1)
+        self.assertIn("dlink2", result.detail)
+
     def test_warn_without_snmp(self):
         result = check_device_inventory(Config(), [], client_factory=FakeClient)
         self.assertIs(result.status, Status.WARN)

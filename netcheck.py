@@ -874,5 +874,87 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
             [r.mac for r in rogues if r.mac])
 
 
+class TelnetError(Exception):
+    pass
+
+
+_MAC_LINE = re.compile(
+    r"([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})\s+(?:eth\S+\s+)?(\d+)\b"
+)
+
+
+def parse_debug_info(text: str) -> dict[str, int]:
+    table: dict[str, int] = {}
+    for mac, port in _MAC_LINE.findall(text):
+        normalized = mac.replace("-", ":").upper()
+        table[normalized] = int(port)
+    return table
+
+
+class TelnetConnection:
+    IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
+
+    def __init__(self, host: str, timeout: float = 5.0):
+        self.host = host
+        self.timeout = timeout
+        self.sock: socket.socket | None = None
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self.host, 23), timeout=self.timeout)
+        self._negotiate(self._read_until_idle())
+
+    def _read_until_idle(self, idle: float = 0.5) -> bytes:
+        assert self.sock is not None
+        self.sock.settimeout(idle)
+        chunks: list[bytes] = []
+        try:
+            while True:
+                data = self.sock.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+        except socket.timeout:
+            pass
+        return b"".join(chunks)
+
+    def _negotiate(self, data: bytes) -> None:
+        assert self.sock is not None
+        response = bytearray()
+        i = 0
+        while i < len(data):
+            if data[i] == self.IAC and i + 2 < len(data):
+                command, option = data[i + 1], data[i + 2]
+                if command in (self.DO, self.DONT):
+                    response += bytes([self.IAC, self.WONT, option])
+                elif command in (self.WILL, self.WONT):
+                    response += bytes([self.IAC, self.DONT, option])
+                i += 3
+            else:
+                i += 1
+        if response:
+            self.sock.sendall(bytes(response))
+
+    def login(self, user: str, password: str) -> str:
+        banner = self._read_until_idle()
+        if b"assword" not in banner and b"ogin" not in banner:
+            self.run_command(user, wait=0.5)
+        else:
+            self.run_command(user, wait=0.5)
+        return self.run_command(password, wait=1.0).decode(errors="replace")
+
+    def run_command(self, cmd: str, wait: float = 1.0) -> bytes:
+        if self.sock is None:
+            raise TelnetError("not connected")
+        self.sock.sendall(cmd.encode() + b"\r\n")
+        import time as _time
+        _time.sleep(wait)
+        return self._read_until_idle()
+
+    def close(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

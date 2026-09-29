@@ -952,5 +952,91 @@ class TelnetConnection:
             self.sock = None
 
 
+BRIDGE_FDB_OID = "1.3.6.1.2.1.17.4.3.1.2"
+QB_FDB_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
+
+CASCADE = {"24": "dlink2", "25": "dlink3", "26": "dlink4", "27": "dlink5"}
+
+
+def mac_to_oid_suffix(mac: str) -> str:
+    return ".".join(str(int(byte, 16)) for byte in mac.replace("-", ":").split(":"))
+
+
+def resolve_ifindex_ports(client) -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    for oid, value in client.walk(BASE_PORT_IFINDEX_OID):
+        if isinstance(value, int):
+            mapping[int(oid.rsplit(".", 1)[1])] = value
+    return mapping
+
+
+def find_fdb_port(client, mac: str) -> int | None:
+    suffix = "." + mac_to_oid_suffix(mac)
+    for base in (BRIDGE_FDB_OID, QB_FDB_OID):
+        try:
+            rows = client.walk(base)
+        except SnmpError:
+            rows = []
+        if rows:
+            ifindex_map = resolve_ifindex_ports(client)
+            for oid, value in rows:
+                if oid.endswith(suffix) and isinstance(value, int):
+                    return ifindex_map.get(value, value)
+    return None
+
+
+def debug_info_lookup(cfg: Config, host: str, mac: str,
+                      telnet_factory=TelnetConnection) -> int | None:
+    factory = telnet_factory or TelnetConnection
+    conn = factory(host, timeout=cfg.timeout)
+    try:
+        conn.connect()
+        conn.login(cfg.switch_user, cfg.switch_pass)
+        output = conn.run_command("debug info", wait=2.0).decode(errors="replace")
+    except (OSError, TelnetError):
+        return None
+    finally:
+        conn.close()
+    return parse_debug_info(output).get(mac.replace("-", ":").upper())
+
+
+def trace_mac(cfg: Config, mac: str, client_factory=SnmpClient,
+              telnet_factory=TelnetConnection) -> CheckResult:
+    telnet_factory = telnet_factory or TelnetConnection
+    name = "dlink1"
+    hops: list[str] = []
+    for _ in range(len(cfg.switches)):
+        host = cfg.switches[name]
+        port: int | None = None
+        if cfg.snmp_community:
+            try:
+                port = find_fdb_port(client_factory(host, cfg.snmp_community,
+                                                    timeout=cfg.timeout), mac)
+            except SnmpError:
+                port = None
+        if port is None:
+            port = debug_info_lookup(cfg, host, mac, telnet_factory)
+        if port is None:
+            trail = "; ".join(hops)
+            detail = f"{trail + '; ' if trail else ''}not found on {name}"
+            return CheckResult(7, f"Trace {mac}", Status.WARN, detail=detail,
+                               likely_cause="MAC not learned; the device may be offline.")
+        hops.append(f"{name} port {port}")
+        if name == "dlink1" and str(port) == "23":
+            return CheckResult(7, f"Trace {mac}", Status.PASS,
+                               detail=f"{name} port 23 (ISP/upstream side)")
+        key = str(port)
+        if name == "dlink1" and key in CASCADE:
+            name = CASCADE[key]
+            continue
+        return CheckResult(7, f"Trace {mac}", Status.PASS,
+                           detail=f"{name}, port {port}",
+                           suggested_fix=f"Unplug the device on {name} port {port}.")
+    trail = "; ".join(hops)
+    return CheckResult(7, f"Trace {mac}", Status.WARN,
+                       detail=f"{trail + ' ' if trail else ''}(loop?)")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

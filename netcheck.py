@@ -643,13 +643,13 @@ def parse_ipconfig_windows(text: str) -> LocalConfig:
 
 def parse_linux(route_text: str, addr_text: str, resolv_text: str) -> LocalConfig:
     lc = LocalConfig()
-    gw = re.search(r"default via ([\d.]+)", route_text)
+    gw = re.search(r"default via ([\d.]+)(?: dev (\S+))?", route_text)
     if gw:
         lc.gateway = gw.group(1)
-    dev = re.search(r"default via [\d.]+ dev (\S+)", route_text)
-    if dev:
-        lc.interface = dev.group(1)
-    addr = re.search(r"inet ([\d.]+)/(\d+)", addr_text)
+        lc.interface = gw.group(2)
+    addr = re.search(r"inet ([\d.]+)/(\d+) .*scope global", addr_text)
+    if not addr:
+        addr = re.search(r"inet (?!127\.|169\.254\.)([\d.]+)/(\d+)", addr_text)
     if addr:
         lc.ip = addr.group(1)
         lc.mask = "/" + addr.group(2)

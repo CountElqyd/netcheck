@@ -1437,18 +1437,10 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(8, "Loop/storm hints", _storm)
 
-        def _trace() -> None:
-            if rogue_macs:
-                for mac in rogue_macs:
-                    reporter.add(trace_mac(cfg, mac))
-            elif rogue_status is Status.PASS:
-                reporter.add(CheckResult(7, "MAC trace", Status.PASS,
-                                         detail="no rogue devices to trace"))
-            else:
-                reporter.add(CheckResult(7, "MAC trace", Status.WARN,
-                                         detail="skipped: no rogue MACs to trace"))
+        def _inventory() -> None:
+            reporter.add(check_device_inventory(cfg, rogue_macs))
 
-        _run_check(7, "MAC trace", _trace)
+        _run_check(7, "Device inventory", _inventory)
 
         fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
         if fixed:

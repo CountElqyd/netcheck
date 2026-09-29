@@ -793,5 +793,21 @@ def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=detect_local_conf
     reporter.add(check_dns(cfg, query_fn=query_fn))
 
 
+def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
+    down = [name for name, ip in cfg.switches.items()
+            if ping_fn(ip, count=2, timeout=cfg.timeout).received == 0]
+    if not down:
+        return CheckResult(5, "Switches", Status.PASS,
+                           detail=f"all {len(cfg.switches)} management IPs reachable")
+    cascade = {"dlink2": "24", "dlink3": "25", "dlink4": "26", "dlink5": "27"}
+    hints = [f"{name} unreachable (check cascade port {cascade[name]} on dlink1)"
+             for name in down if name in cascade]
+    if "dlink1" in down:
+        hints.append("dlink1 unreachable (management path or switch 1 problem)")
+    return CheckResult(5, "Switches", Status.WARN, detail="; ".join(hints),
+                       likely_cause="One or more switches are not answering management pings.",
+                       suggested_fix="Reseat the cascade/uplink cable and confirm the mgmt IP.")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

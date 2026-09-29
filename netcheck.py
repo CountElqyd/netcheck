@@ -72,16 +72,43 @@ class Reporter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="netcheck", description=__doc__)
     parser.add_argument("--version", action="version", version=f"netcheck {__version__}")
+    parser.add_argument("--quick", action="store_true", help="checks 1-4 only")
+    parser.add_argument("--log", action="store_true", help="save a timestamped report")
+    parser.add_argument("--config", help="path to an INI config file")
+    parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
+    parser.add_argument("--sample", type=float, default=30.0,
+                        help="counter-sampling window for storm thresholds (seconds)")
+    parser.add_argument("--no-measure", action="store_true",
+                        help="skip rate sampling; use the static storm baseline")
+    parser.add_argument("--timeout", type=float, default=3.0,
+                        help="per-operation network timeout (seconds)")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--no-color", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
-        parser.parse_args(argv)
+        args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0)
-    return 0
+    cfg = load_config(path=args.config)
+    cfg.timeout = args.timeout
+    reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
+    try:
+        run_all(cfg, reporter, quick=args.quick, no_measure=args.no_measure,
+                sample=args.sample, allow_fix=not args.no_fix)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+    text = reporter.render()
+    print(text)
+    if args.log:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        with open(f"netcheck-{stamp}.log", "w") as fh:
+            fh.write(text + "\n")
+    return reporter.exit_code()
 
 
 import configparser
@@ -1275,6 +1302,38 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
     if prompt_yes_no(f"Set this PC's DNS to {primary}/{secondary}?", tty=tty):
         applied.append(f"requested DNS change to {primary}/{secondary}")
     return applied
+
+
+def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
+            no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
+            tty=None, runner=run_command) -> None:
+    layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
+    layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
+        server, name, timeout=kw.get("timeout", cfg.timeout))
+    run_layer_checks(cfg, reporter,
+                     local_fn=lambda: detect_local_config(runner),
+                     ping_fn=layer_ping, query_fn=layer_query)
+    if quick:
+        return
+
+    reporter.add(check_switches(cfg, ping_fn=layer_ping))
+    rogue_result, rogue_macs = check_rogue_dhcp(cfg, runner=runner)
+    reporter.add(rogue_result)
+
+    measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)
+    per_switch_measured = next(iter(measured.values()), None)
+    hardening_result, loop_ports = check_hardening(cfg, measured=per_switch_measured)
+    reporter.add(hardening_result)
+
+    gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
+    reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+
+    for mac in rogue_macs:
+        reporter.add(trace_mac(cfg, mac))
+
+    fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
+    if fixed:
+        reporter.add(CheckResult(99, "Fixes applied", Status.PASS, detail="; ".join(fixed)))
 
 
 if __name__ == "__main__":

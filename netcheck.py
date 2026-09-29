@@ -562,13 +562,14 @@ def build_dns_query(name: str, txid: int) -> bytes:
 
 
 def _skip_dns_name(data: bytes, offset: int) -> int:
-    while True:
+    while offset < len(data):
         length = data[offset]
         if length == 0:
             return offset + 1
         if length & 0xC0:
             return offset + 2
         offset += 1 + length
+    return len(data)
 
 
 def parse_dns_a(data: bytes) -> list[str]:
@@ -607,7 +608,10 @@ def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float
     finally:
         sock.close()
     elapsed = (time.monotonic() - started) * 1000
-    answers = parse_dns_a(data)
+    try:
+        answers = parse_dns_a(data)
+    except (IndexError, struct.error):
+        answers = []
     return bool(answers), elapsed, answers
 
 

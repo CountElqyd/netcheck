@@ -26,6 +26,13 @@ class TestDns(unittest.TestCase):
         header = struct.pack(">HHHHHH", 1, 0x8180, 0, 0, 0, 0)
         self.assertEqual(parse_dns_a(header), [])
 
+    def test_truncated_response_returns_empty(self):
+        self.assertEqual(parse_dns_a(b"\x00"), [])
+
+    def test_malformed_question_count_does_not_raise(self):
+        header = struct.pack(">HHHHHH", 1, 0x8180, 9, 0, 0, 0)
+        self.assertEqual(parse_dns_a(header), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import unittest
 from netcheck import (
     SnmpClient,
     _encode_request,
+    _oid_key,
     _parse_response,
     ber_decode_tlv,
     decode_port_list,
@@ -35,6 +36,28 @@ class TestSnmp(unittest.TestCase):
         _, _, offset = ber_decode_tlv(message, offset)
         tag, _, _ = ber_decode_tlv(message, offset)
         self.assertEqual(tag, 0xA0)
+
+    def test_oid_key_numeric_order(self):
+        self.assertLess(_oid_key("1.3.6.1.2.2.9"), _oid_key("1.3.6.1.2.2.10"))
+
+    def test_exception_tags_decode_to_none(self):
+        for tag in (0x80, 0x81, 0x82):
+            self.assertIsNone(decode_value(tag, b""))
+
+    def test_get_bulk_field_count(self):
+        packed = _encode_request("public", 1, 42, 0xA5, ["1.3.6.1.2.1.2.2.1.2"],
+                                 max_repetitions=25)
+        _, message, _ = ber_decode_tlv(packed)
+        offset = 0
+        _, _, offset = ber_decode_tlv(message, offset)
+        _, _, offset = ber_decode_tlv(message, offset)
+        tag, pdu, _ = ber_decode_tlv(message, offset)
+        self.assertEqual(tag, 0xA5)
+        po, fields = 0, 0
+        while po < len(pdu):
+            _, _, po = ber_decode_tlv(pdu, po)
+            fields += 1
+        self.assertEqual(fields, 4)
 
     def test_client_construction(self):
         client = SnmpClient("10.90.90.90", "public")

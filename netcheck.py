@@ -276,7 +276,7 @@ def decode_value(tag: int, value: bytes) -> object:
         return ber_decode_integer(value)
     if tag == TAG_OCTET:
         return value
-    if tag == TAG_NULL:
+    if tag in (TAG_NULL, 0x80, 0x81, 0x82):
         return None
     if tag == TAG_OID:
         return ber_decode_oid(value)
@@ -301,7 +301,7 @@ def _apply_pdu(pdu_tag: int, request_id: int, oids: list[str],
         fields = [
             ber_encode_integer(request_id),
             ber_encode_integer(0),
-            ber_encode_integer(max_repetitions or 25),
+            ber_encode_integer(25 if max_repetitions is None else max_repetitions),
             ber_encode_sequence([varbinds]),
         ]
     else:
@@ -344,19 +344,25 @@ def _parse_response(data: bytes) -> tuple[int, int, list[tuple[str, object]]]:
     pdu_tag, pdu, _ = ber_decode_tlv(message, offset)
     pdu_offset = 0
     _, request_bytes, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    if pdu_tag == PDU_GET_BULK:
-        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-    else:
-        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
-        _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    _, first_field, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
+    if pdu_tag != PDU_GET_BULK:
+        error_status = ber_decode_integer(first_field)
+        if error_status:
+            raise SnmpError(f"SNMP error-status {error_status}")
+    _, _, pdu_offset = ber_decode_tlv(pdu, pdu_offset)
     _, varbind_list_bytes, _ = ber_decode_tlv(pdu, pdu_offset)
     return (ber_decode_integer(version_bytes), ber_decode_integer(request_bytes),
             _parse_varbinds(varbind_list_bytes))
 
 
+def _oid_key(oid: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in oid.split("."))
+
+
 def _oid_in_subtree(oid: str, base: str) -> bool:
-    return oid == base or oid.startswith(base + ".")
+    oid_parts = _oid_key(oid)
+    base_parts = _oid_key(base)
+    return oid_parts[:len(base_parts)] == base_parts
 
 
 class SnmpClient:
@@ -390,7 +396,9 @@ class SnmpClient:
         self.request_id = (self.request_id + 1) & 0x7FFFFFFF
         packet = _encode_request(self.community, self.version_int, self.request_id,
                                  pdu_type, oids, max_repetitions)
-        _version, _req_id, varbinds = _parse_response(self._exchange(packet))
+        _version, req_id, varbinds = _parse_response(self._exchange(packet))
+        if req_id != self.request_id:
+            raise SnmpError(f"request id mismatch: sent {self.request_id}, got {req_id}")
         return varbinds
 
     def get(self, oids: list[str]) -> dict[str, object]:
@@ -401,7 +409,7 @@ class SnmpClient:
         if not varbinds:
             return None
         next_oid, value = varbinds[0]
-        if value is None or next_oid <= oid:
+        if value is None or _oid_key(next_oid) <= _oid_key(oid):
             return None
         return next_oid, value
 

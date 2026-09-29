@@ -433,3 +433,40 @@ class SnmpClient:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+OUI_TABLE: dict[str, str] = {
+    "001B11": "D-Link", "001E58": "D-Link", "001CF0": "D-Link", "14D64D": "D-Link",
+    "1CBDB9": "D-Link", "340804": "D-Link", "5CD998": "D-Link", "909448": "D-Link",
+    "B8A386": "D-Link", "C8BE19": "D-Link", "F07D68": "D-Link", "FCF8AE": "D-Link",
+    "000C29": "VMware", "005056": "VMware", "080027": "VirtualBox",
+    "00000C": "Cisco", "001A2F": "Cisco", "001B0C": "Cisco", "001E13": "Cisco",
+    "00235E": "Cisco", "001A8C": "Cisco", "E4AA5D": "Cisco", "F4CFE2": "Cisco",
+    "000FB5": "Netgear", "001B2F": "Netgear", "204E7F": "Netgear", "A040A0": "Netgear",
+    "50C7BF": "TP-Link", "A42BB0": "TP-Link", "B0BE76": "TP-Link", "EC086B": "TP-Link",
+    "F4EC38": "TP-Link", "14CC20": "TP-Link", "60A4D0": "TP-Link",
+    "0418D6": "Ubiquiti", "24A43C": "Ubiquiti", "44D9E7": "Ubiquiti", "788A20": "Ubiquiti",
+    "F09FC2": "Ubiquiti",
+    "001CB3": "Apple", "3C0754": "Apple", "F0DBF8": "Apple", "A4C361": "Apple",
+    "000D3A": "Microsoft", "0017FA": "Microsoft", "7C1E52": "Microsoft",
+    "002248": "Microsoft", "00155D": "Microsoft",
+    "001132": "Synology", "0011D8": "ASUS", "002215": "ASUS", "9C5C8E": "ASUS",
+    "001E8C": "HP", "0025B3": "HP", "3C4A92": "HP", "9457A5": "HP",
+    "001B78": "Dell", "002219": "Dell", "1866DA": "Dell", "B8CA3A": "Dell",
+    "525400": "QEMU/KVM", "00163E": "Xen", "001C42": "Parallels",
+    "0009B0": "Raspberry Pi", "B827EB": "Raspberry Pi", "DCA632": "Raspberry Pi",
+    "E45F01": "Raspberry Pi",
+    "24EE9A": "Intel", "3C9509": "Intel", "7CB27D": "Intel", "A0369F": "Intel",
+    "1868CB": "Intel",
+    "1C1B0D": "GIGA-BYTE", "B42E99": "GIGA-BYTE", "94DE80": "GIGA-BYTE",
+    "0024E8": "Dell", "001E4F": "Dell",
+    "6C5AB0": "Tenda", "C83A35": "Tenda", "D8320E": "Tenda",
+    "B0958E": "Ruckus", "001392": "Ruckus", "C0C520": "Ruckus",
+}
+
+
+def lookup_vendor(mac: str) -> str | None:
+    normalized = mac.replace(":", "").replace("-", "").replace(".", "").upper()
+    if len(normalized) < 6:
+        return None
+    return OUI_TABLE.get(normalized[:6])

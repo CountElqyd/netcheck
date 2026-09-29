@@ -1170,5 +1170,54 @@ def check_hardening(cfg: Config, measured: dict | None = None,
                                      "RSTP, DHCP Server Screening)."), loop_ports
 
 
+def ceil_to_64(n: float) -> int:
+    return int(-(-n // 64) * 64)
+
+
+def compute_threshold(peak_kbps: float, link_kbps: int, factor: int = 4,
+                      floor: int = 10000) -> int:
+    target = max(ceil_to_64(peak_kbps * factor), floor)
+    return min(target, int(0.8 * link_kbps))
+
+
+def _counter_snapshot(client) -> dict[str, int]:
+    snapshot: dict[str, int] = {}
+    for oid, value in client.walk("1.3.6.1.2.1.31.1.1.1.9"):
+        snapshot["b" + oid.rsplit(".", 1)[1]] = int(value)
+    for oid, value in client.walk("1.3.6.1.2.1.31.1.1.1.8"):
+        snapshot["m" + oid.rsplit(".", 1)[1]] = int(value)
+    return snapshot
+
+
+def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
+                            client_factory=SnmpClient) -> dict[str, dict]:
+    if not cfg.snmp_community or sample_seconds <= 0:
+        return {}
+    import concurrent.futures
+
+    def per_switch(item: tuple[str, str]) -> tuple[str, dict]:
+        name, host = item
+        try:
+            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            before = _counter_snapshot(client)
+            time.sleep(sample_seconds)
+            after = _counter_snapshot(client)
+        except SnmpError:
+            return name, {}
+        link_kbps = 1_000_000
+        peak = 0.0
+        for key, start in before.items():
+            end = after.get(key, start)
+            rate = max(0, end - start) / sample_seconds
+            kbps = rate * 512 / 1000
+            peak = max(peak, kbps)
+        return name, {"threshold": compute_threshold(
+            peak, link_kbps, cfg.storm_safety_factor, cfg.storm_floor_kbps)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(cfg.switches)) as pool:
+        return {name: data for name, data in pool.map(per_switch, cfg.switches.items())
+                if data}
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

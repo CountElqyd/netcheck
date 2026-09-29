@@ -1,6 +1,8 @@
+import sys
 import unittest
+from unittest import mock
 
-from netcheck import PingResult, parse_ping_output
+from netcheck import parse_ping_output, ping, ping_argv, run_command
 
 LINUX = """PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.
 64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=1.23 ms
@@ -46,6 +48,30 @@ class TestPing(unittest.TestCase):
         self.assertEqual((r.transmitted, r.received), (4, 3))
         self.assertEqual(r.loss_pct, 25.0)
         self.assertEqual(r.avg_ms, 11.0)
+
+    def test_ping_argv_per_platform(self):
+        with mock.patch("sys.platform", "win32"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-n", "3", "8.8.8.8"])
+        with mock.patch("sys.platform", "linux"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-c", "3", "8.8.8.8"])
+        with mock.patch("sys.platform", "darwin"):
+            self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-c", "3", "8.8.8.8"])
+
+    def test_ping_uses_injected_runner(self):
+        seen = {}
+
+        def fake_runner(args, timeout=10.0):
+            seen["args"] = args
+            return 0, "3 packets transmitted, 3 received, 0% packet loss", ""
+
+        result = ping("192.168.1.1", count=3, runner=fake_runner)
+        self.assertEqual(result.received, 3)
+        self.assertIn("192.168.1.1", seen["args"])
+
+    def test_run_command_captures_output(self):
+        code, out, _ = run_command([sys.executable, "-c", "print('hi')"])
+        self.assertEqual(code, 0)
+        self.assertIn("hi", out)
 
 
 if __name__ == "__main__":

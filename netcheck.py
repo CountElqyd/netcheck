@@ -484,9 +484,7 @@ def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
 def ping_argv(host: str, count: int) -> list[str]:
     if sys.platform.startswith("win"):
         return ["ping", "-n", str(count), host]
-    if sys.platform == "darwin":
-        return ["ping", "-c", str(count), "-t", "5", host]
-    return ["ping", "-c", str(count), "-w", "5", host]
+    return ["ping", "-c", str(count), host]
 
 
 @dataclass

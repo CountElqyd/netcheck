@@ -468,5 +468,90 @@ def lookup_vendor(mac: str) -> str | None:
     return OUI_TABLE.get(normalized[:6])
 
 
+import re
+import subprocess
+
+
+def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                              check=False)
+        return proc.returncode, proc.stdout, proc.stderr
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+
+
+def ping_argv(host: str, count: int) -> list[str]:
+    if sys.platform.startswith("win"):
+        return ["ping", "-n", str(count), host]
+    if sys.platform == "darwin":
+        return ["ping", "-c", str(count), "-t", "5", host]
+    return ["ping", "-c", str(count), "-w", "5", host]
+
+
+@dataclass
+class PingResult:
+    host: str
+    transmitted: int = 0
+    received: int = 0
+    loss_pct: float = 100.0
+    min_ms: float | None = None
+    avg_ms: float | None = None
+    max_ms: float | None = None
+
+
+def parse_ping_output(host: str, output: str) -> PingResult:
+    result = PingResult(host=host)
+
+    loss = re.search(r"(\d+(?:\.\d+)?)%\s*(?:packet\s+)?loss", output, re.IGNORECASE)
+    if not loss:
+        loss = re.search(r"\((\d+(?:\.\d+)?)%\s*loss\)", output, re.IGNORECASE)
+    if loss:
+        result.loss_pct = float(loss.group(1))
+
+    sent = re.search(r"(\d+)\s+packets?\s+transmitted", output, re.IGNORECASE)
+    if sent:
+        result.transmitted = int(sent.group(1))
+    else:
+        sent = re.search(r"Sent\s*=\s*(\d+)", output, re.IGNORECASE)
+        if sent:
+            result.transmitted = int(sent.group(1))
+
+    recv = re.search(r"(\d+)\s+(?:packets?\s+)?received", output, re.IGNORECASE)
+    if recv:
+        result.received = int(recv.group(1))
+    else:
+        recv = re.search(r"Received\s*=\s*(\d+)", output, re.IGNORECASE)
+        if recv:
+            result.received = int(recv.group(1))
+
+    rtt = re.search(
+        r"(?:rtt|round-trip)\s+min/avg/max/(?:mdev|stddev)\s*=\s*"
+        r"([\d.]+)/([\d.]+)/([\d.]+)",
+        output, re.IGNORECASE,
+    )
+    if rtt:
+        result.min_ms, result.avg_ms, result.max_ms = (float(x) for x in rtt.groups())
+    else:
+        win = re.search(
+            r"Minimum\s*=\s*(\d+)ms,\s*Maximum\s*=\s*(\d+)ms,\s*Average\s*=\s*(\d+)ms",
+            output, re.IGNORECASE,
+        )
+        if win:
+            result.min_ms = float(win.group(1))
+            result.max_ms = float(win.group(2))
+            result.avg_ms = float(win.group(3))
+
+    if result.transmitted and not result.received:
+        result.received = round(result.transmitted * (1 - result.loss_pct / 100))
+    return result
+
+
+def ping(host: str, count: int = 10, timeout: float = 3.0,
+         runner=run_command) -> PingResult:
+    _, out, _ = runner(ping_argv(host, count), timeout=count * timeout + 5)
+    return parse_ping_output(host, out)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

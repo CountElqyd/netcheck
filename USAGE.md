@@ -206,14 +206,13 @@ Verify with a ping to one switch management IP before running the tool.
 |---|---|---|
 | Raw sockets / admin | Rogue-DHCP probe (check 6) | Administrator (Windows) or root / `sudo` (Linux/macOS) |
 | `scapy` | Preferred rogue-DHCP probe | `pip install scapy`, or `uv run --with scapy netcheck.py` |
-| `nmap` | Fallback rogue-DHCP probe | Install `nmap`; used automatically if scapy is absent |
 | `pysnmp` | SNMP v3 only | Optional; the built-in client speaks v1/v2c |
 
 On Linux/macOS, if you cannot run as root, grant the interpreter raw-socket
 capability: `sudo setcap cap_net_raw+ep $(command -v python3)`.
 
-Without raw-socket rights, check 6 degrades to `nmap`, then to `WARN` — the rest
-of the tool still works.
+Without raw-socket rights (or without `scapy`), check 6 reports `WARN: not tested`
+with the exact reason — the rest of the tool still works.
 
 ### 3.5 Firewall
 
@@ -517,8 +516,8 @@ fixes (§10).
 | 3 | Internet by IP | Pings `1.1.1.1` and `8.8.8.8` | PASS: both. WARN: one. FAIL: neither |
 | 4 | DNS | Resolves the test domain on ISP DNS and public DNS | FAIL: public works but ISP fails (**ISP DNS problem**). WARN: ISP works, public fails. FAIL: none |
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
-| 6 | Rogue DHCP | scapy broadcast discover (5 s), then `nmap`, then WARN | PASS: only `192.168.1.1`. FAIL: any other responder |
-| 7 | Trace `<mac>` | SNMP FDB walk from dlink1, hopping downstream; Telnet `debug info` fallback | PASS: reports *Switch, port Y* (or port 23 = ISP/upstream side). WARN: MAC not learned |
+| 6 | Rogue DHCP | scapy broadcast discover (5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
+| 7 | MAC trace | SNMP FDB walk from dlink1 (Telnet `debug info` fallback); always emits once | PASS: *Switch, port Y* (or port 23 = ISP side), or "no rogue devices to trace". WARN: MAC not learned, or skipped when no rogue MACs |
 | 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter | FAIL: a port is in loop state. WARN: loss >5% or jitter >30 ms. PASS: quiet |
 | 9 | Hardening audit | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. FAIL: a port in loop state. WARN: findings or SNMP unavailable |
 | 99 | Fixes applied | Present only if you accepted a fix | — |
@@ -533,6 +532,26 @@ Traces (7) are printed once per rogue MAC found by check 6.
 - `WARN` — degraded, unusual, or **could not be determined** (missing rights, no
   SNMP). Not necessarily broken.
 - `FAIL` — definitively broken.
+
+### 7.3 Sample output
+
+```
+[PASS]  1. Local config   - 192.168.1.50 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
+[FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
+    Likely cause: A non-gateway DHCP server is handing out leases.
+    Suggested fix: Trace the responder MAC (check 7) and unplug it; enable DHCP
+                   Server Screening (Security) with 192.168.1.1 trusted.
+[PASS]  7. Trace aa:bb:cc:dd:ee:ff - dlink1 port 5
+[WARN]  9. Hardening audit - dlink1: Loopback Detection: disabled (recommended: enabled, recover time 0)
+    Likely cause: -
+    Suggested fix: Apply the baseline in USAGE.md.
+
+Summary: 2 PASS · 1 WARN · 1 FAIL  (exit code 2)
+Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
+```
+
+Each result's cause/fix block prints only when at least one is set; a missing
+line shows `-`.
 
 ---
 
@@ -616,8 +635,10 @@ The tool never changes the router or any switch.
   switch, the community is wrong/non-matching, a view blocks the MIBs, the
   management subnet is unreachable, or the host firewall blocks UDP 161. See
   [§4.3](#43-enable-snmp-read-only) for the full setup and verification.
-- **Check 6 WARN "needs root/scapy/nmap".** Run elevated, install `scapy` (or
-  `nmap`), or accept the WARN.
+- **Check 6 WARN "not tested: ...".** The detail names the reason (`scapy not
+  installed`, `raw sockets denied`, ...). Install `scapy`
+  (`uv run --with scapy netcheck.py`) and run as root/administrator, or accept
+  the WARN.
 - **Check 7 falls back to Telnet.** The SNMP FDB walk returned no rows. Confirm
   Telnet `debug info` output matches the expected format; `--verbose` captures a
   sample. Do not trust an unverified parse.

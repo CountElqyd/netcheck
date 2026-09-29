@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+netcheck.ini
+netcheck-*.log
+SHA256SUMS

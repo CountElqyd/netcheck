@@ -615,5 +615,108 @@ def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float
     return bool(answers), elapsed, answers
 
 
+@dataclass
+class LocalConfig:
+    ip: str | None = None
+    mask: str | None = None
+    gateway: str | None = None
+    dns: list[str] = field(default_factory=list)
+    interface: str | None = None
+
+
+def parse_ipconfig_windows(text: str) -> LocalConfig:
+    lc = LocalConfig()
+    ip = re.search(r"IPv4 Address[^:]*:\s*([\d.]+)", text)
+    if ip:
+        lc.ip = ip.group(1)
+    mask = re.search(r"Subnet Mask[^:]*:\s*([\d.]+)", text)
+    if mask:
+        lc.mask = mask.group(1)
+    gw = re.search(r"Default Gateway[^:]*:\s*([\d.]+)", text)
+    if gw:
+        lc.gateway = gw.group(1)
+    dns_block = re.search(r"DNS Servers[^:]*:\s*([\d.\s]+)", text)
+    if dns_block:
+        lc.dns = re.findall(r"\d+\.\d+\.\d+\.\d+", dns_block.group(1))
+    return lc
+
+
+def parse_linux(route_text: str, addr_text: str, resolv_text: str) -> LocalConfig:
+    lc = LocalConfig()
+    gw = re.search(r"default via ([\d.]+)", route_text)
+    if gw:
+        lc.gateway = gw.group(1)
+    dev = re.search(r"default via [\d.]+ dev (\S+)", route_text)
+    if dev:
+        lc.interface = dev.group(1)
+    addr = re.search(r"inet ([\d.]+)/(\d+)", addr_text)
+    if addr:
+        lc.ip = addr.group(1)
+        lc.mask = "/" + addr.group(2)
+    lc.dns = re.findall(r"^nameserver\s+([\d.]+)", resolv_text, re.MULTILINE)
+    return lc
+
+
+def parse_macos(route_text: str, dns_text: str, ifaddr: str) -> LocalConfig:
+    lc = LocalConfig()
+    gw = re.search(r"gateway:\s*([\d.]+)", route_text)
+    if gw:
+        lc.gateway = gw.group(1)
+    iface = re.search(r"interface:\s*(\S+)", route_text)
+    if iface:
+        lc.interface = iface.group(1)
+    lc.ip = ifaddr.strip() or None
+    lc.dns = re.findall(r"nameserver\[[^\]]+\]\s*:\s*([\d.]+)", dns_text)
+    return lc
+
+
+def detect_local_config(runner=run_command) -> LocalConfig:
+    if sys.platform.startswith("win"):
+        _, out, _ = runner(["ipconfig", "/all"])
+        return parse_ipconfig_windows(out)
+    if sys.platform == "darwin":
+        _, route, _ = runner(["route", "-n", "get", "default"])
+        _, dns, _ = runner(["scutil", "--dns"])
+        iface = None
+        m = re.search(r"interface:\s*(\S+)", route)
+        if m:
+            iface = m.group(1)
+        ifaddr = ""
+        if iface:
+            _, ifaddr, _ = runner(["ipconfig", "getifaddr", iface])
+        return parse_macos(route, dns, ifaddr)
+    _, route, _ = runner(["ip", "route"])
+    _, addr, _ = runner(["ip", "-4", "addr"])
+    resolv = ""
+    try:
+        with open("/etc/resolv.conf") as fh:
+            resolv = fh.read()
+    except OSError:
+        pass
+    return parse_linux(route, addr, resolv)
+
+
+def check_local_config(cfg: Config, local_fn=detect_local_config) -> CheckResult:
+    lc = local_fn()
+    detail = f"{lc.ip or 'no IP'} gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
+    if not lc.ip:
+        return CheckResult(1, "Local config", Status.FAIL, detail=detail,
+                           likely_cause="No IPv4 address on the active interface.",
+                           suggested_fix="Connect the cable/join Wi-Fi and renew DHCP.")
+    if lc.ip.startswith("169.254."):
+        return CheckResult(1, "Local config", Status.FAIL, detail=detail,
+                           likely_cause="APIPA address: DHCP did not answer.",
+                           suggested_fix="Check the switch port/uplink, then renew the lease.")
+    if lc.gateway != cfg.gateway:
+        return CheckResult(1, "Local config", Status.FAIL, detail=detail,
+                           likely_cause=f"Gateway is not {cfg.gateway}.",
+                           suggested_fix="Set the default gateway to 192.168.1.1.")
+    if not lc.dns:
+        return CheckResult(1, "Local config", Status.WARN, detail=detail,
+                           likely_cause="No DNS servers configured.",
+                           suggested_fix="Set DNS to 1.1.1.1/8.8.8.8 or the ISP DNS.")
+    return CheckResult(1, "Local config", Status.PASS, detail=detail)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

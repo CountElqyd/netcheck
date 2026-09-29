@@ -25,14 +25,42 @@ class TestOrchestration(unittest.TestCase):
     def test_default_config_path(self):
         self.assertEqual(netcheck.build_parser().parse_args([]).config, "netcheck.ini")
 
-    def test_run_all_contains_unexpected_error(self):
+    def test_failing_check_does_not_stop_later_checks(self):
         reporter = netcheck.Reporter(color=False)
-        original = netcheck.check_switches
-        netcheck.check_switches = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        orig_switches = netcheck.check_switches
+        orig_rogue = netcheck.check_rogue_dhcp
+        netcheck.check_switches = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        netcheck.check_rogue_dhcp = lambda *a, **k: (
+            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
         try:
-            netcheck.run_all(netcheck.Config(), reporter, runner=lambda *a, **k: (0, "", ""))
+            netcheck.run_all(netcheck.Config(), reporter, no_measure=True,
+                             runner=lambda *a, **k: (0, "", ""))
         finally:
-            netcheck.check_switches = original
+            netcheck.check_switches = orig_switches
+            netcheck.check_rogue_dhcp = orig_rogue
+        ids = [r.id for r in reporter.results]
+        self.assertIn(5, ids)
+        self.assertIn(7, ids)
+        self.assertIn(8, ids)
+        self.assertIn(9, ids)
+        check5 = next(r for r in reporter.results if r.id == 5)
+        self.assertIs(check5.status, netcheck.Status.WARN)
+        self.assertIn("check failed", check5.detail)
+        check7 = next(r for r in reporter.results if r.id == 7)
+        self.assertIs(check7.status, netcheck.Status.PASS)
+        self.assertIn("no rogue devices", check7.detail)
+
+    def test_outer_handler_reports_internal_error(self):
+        reporter = netcheck.Reporter(color=False)
+        orig = netcheck.run_layer_checks
+        netcheck.run_layer_checks = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("phase-a boom"))
+        try:
+            netcheck.run_all(netcheck.Config(), reporter,
+                             runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.run_layer_checks = orig
         self.assertTrue(any(r.id == 98 for r in reporter.results))
 
 

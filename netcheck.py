@@ -1344,6 +1344,18 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
             tty=None, runner=run_command, verbose: bool = False) -> None:
+    def _run_check(check_id: int, title: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - isolate each fabric check
+            if verbose:
+                import traceback
+                traceback.print_exc()
+            reporter.add(CheckResult(check_id, title, Status.WARN,
+                                     detail=f"check failed: {exc}",
+                                     likely_cause="An unexpected error interrupted this check.",
+                                     suggested_fix="Re-run with --verbose for details."))
+
     try:
         layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
@@ -1354,26 +1366,57 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         if quick:
             return
 
-        reporter.add(check_switches(cfg, ping_fn=layer_ping))
-        rogue_result, rogue_macs = check_rogue_dhcp(cfg)
-        reporter.add(rogue_result)
+        _run_check(5, "Switches",
+                   lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
-        measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)
-        per_switch_measured = next(iter(measured.values()), None)
-        hardening_result, loop_ports = check_hardening(cfg, measured=per_switch_measured)
-        reporter.add(hardening_result)
+        rogue_macs: list[str] = []
+        rogue_status: Status | None = None
 
-        gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
-        reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+        def _rogue() -> None:
+            nonlocal rogue_status
+            result, macs = check_rogue_dhcp(cfg)
+            reporter.add(result)
+            rogue_status = result.status
+            rogue_macs.extend(macs)
 
-        for mac in rogue_macs:
-            reporter.add(trace_mac(cfg, mac))
+        _run_check(6, "Rogue DHCP", _rogue)
+
+        loop_ports: dict[str, list[int]] = {}
+
+        def _hardening() -> None:
+            measured = ({} if no_measure
+                        else measure_storm_threshold(cfg, sample_seconds=sample))
+            per_switch_measured = next(iter(measured.values()), None)
+            result, ports = check_hardening(cfg, measured=per_switch_measured)
+            reporter.add(result)
+            loop_ports.update(ports)
+
+        _run_check(9, "Hardening audit", _hardening)
+
+        def _storm() -> None:
+            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
+            reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+
+        _run_check(8, "Loop/storm hints", _storm)
+
+        def _trace() -> None:
+            if rogue_macs:
+                for mac in rogue_macs:
+                    reporter.add(trace_mac(cfg, mac))
+            elif rogue_status is Status.PASS:
+                reporter.add(CheckResult(7, "MAC trace", Status.PASS,
+                                         detail="no rogue devices to trace"))
+            else:
+                reporter.add(CheckResult(7, "MAC trace", Status.WARN,
+                                         detail="skipped: no rogue MACs to trace"))
+
+        _run_check(7, "MAC trace", _trace)
 
         fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
         if fixed:
             reporter.add(CheckResult(99, "Fixes applied", Status.PASS,
                                      detail="; ".join(fixed)))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - last-resort guard (Phase A, fixes)
         if verbose:
             import traceback
             traceback.print_exc()

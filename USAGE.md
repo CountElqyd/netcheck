@@ -93,8 +93,8 @@ Strict tree — there are no redundant links. Management IPs are `10.90.90.90`
 
 > **One-time prerequisite:** complete [§4.3](#43-enable-snmp-read-only) (enable a
 > read-only SNMP community on all five switches) before taking the baseline.
-> Without it, check 9 reports `SNMP community not set` and check 7 cannot trace
-> MACs. The storm measurement also requires SNMP.
+> Without it, check 9 reports `SNMP community not set` and check 7 cannot list
+> devices. The storm measurement also requires SNMP.
 
 ### 2.1 Capture a connectivity baseline
 
@@ -241,8 +241,8 @@ If no file exists, built-in defaults are used. Precedence is
 | `domain` | `example.com` | Test domain for DNS resolution |
 | `snmp_community` | *(empty)* | Read-only SNMP v2c community; empty disables the switch audit |
 | `snmp_version` | `2c` | `1` or `2c` |
-| `switch_user` | `admin` | Telnet `debug info` fallback user |
-| `switch_pass` | *(empty)* | Telnet password (prefer env) |
+| `switch_user` | `admin` | Unused; retained for config compatibility |
+| `switch_pass` | *(empty)* | Unused; retained for config compatibility |
 | `storm_safety_factor` | `4` | Multiplier over measured peak |
 | `storm_floor_kbps` | `10000` | Lower bound for the recommendation |
 | `switches` | `dlink1=10.90.90.90,...` | `name=ip` list, comma-separated |
@@ -285,8 +285,8 @@ if the default is still in use.
 ### 4.3 Enable SNMP (read-only)
 
 SNMP is **disabled by default**, and the tool needs it to read switch state for
-the hardening audit (check 9) and the MAC trace (check 7). Configure each switch
-as follows, then repeat steps 2–3 on all five using the **same** community
+the hardening audit (check 9) and the device inventory (check 7). Configure each
+switch as follows, then repeat steps 2–3 on all five using the **same** community
 string.
 
 1. **Enable SNMP globally.** `SNMP > SNMP > SNMP Global Settings` → select
@@ -329,18 +329,15 @@ Notes:
 - **Reachability:** allow UDP 161 from the management laptop, which must carry
   the `10.90.90.0/8` alias from §3.3.
 
-### 4.4 Keep Telnet available (fallback only)
+### 4.4 Telnet is not used
 
-The DGS-1210 Telnet CLI is enabled by default on this firmware and is used only
-as a **read fallback**: if the SNMP FDB walk returns nothing, check 7 falls back
-to logging in over Telnet and running `debug info` (which dumps the ARP table
-and MAC forwarding database).
+The DGS-1210 Telnet CLI exists on this firmware, but the tool does **not** use
+it. In particular, the device inventory (check 7) has **no Telnet fallback**: if
+the SNMP FDB walk returns nothing, the switch's rows are simply empty. SNMP
+(§4.3) is the only way the tool reads switch state.
 
-Confirm once per switch by logging in over Telnet and running `debug info` — you
-should see the ARP table and MAC FDB. This CLI cannot configure LBD/STP/Storm/
-DHCP-screening, which is why all remediation is in the web UI.
-
-Set `switch_user` / `switch_pass` (or the env vars) to match.
+Telnet cannot configure LBD/STP/Storm/DHCP-screening, which is why all
+remediation is in the web UI.
 
 ### 4.5 Save
 
@@ -517,16 +514,15 @@ fixes (§10).
 | 4 | DNS | Resolves the test domain on ISP DNS and public DNS | FAIL: public works but ISP fails (**ISP DNS problem**). WARN: ISP works, public fails. FAIL: none |
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
 | 6 | Rogue DHCP | scapy broadcast discover (5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
-| 7 | MAC trace | SNMP FDB walk from dlink1 (Telnet `debug info` fallback); always emits once | PASS: *Switch, port Y* (or port 23 = ISP side), or "no rogue devices to trace". WARN: MAC not learned, or skipped when no rogue MACs |
+| 7 | Device inventory | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists all MACs with physical port, grouped by switch, always in full | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder. WARN: SNMP not configured or no switch returned an FDB |
 | 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter | FAIL: a port is in loop state. WARN: loss >5% or jitter >30 ms. PASS: quiet |
 | 9 | Hardening audit | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. FAIL: a port in loop state. WARN: findings or SNMP unavailable |
 | 99 | Fixes applied | Present only if you accepted a fix | — |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
 **Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 9, 8, 7.
-Check 7 emits once per run: a trace line per rogue MAC found by check 6, otherwise
-a single `no rogue devices to trace` (check 6 PASS) or `skipped: no rogue MACs to
-trace` (otherwise) result.
+Check 7 always prints the full per-switch device table. Rows for MACs confirmed as
+non-gateway DHCP responders (check 6) are marked `ROGUE`.
 
 ### 7.2 Status meanings
 
@@ -543,7 +539,10 @@ trace` (otherwise) result.
     Likely cause: A non-gateway DHCP server is handing out leases.
     Suggested fix: Trace the responder MAC (check 7) and unplug it; enable DHCP
                    Server Screening (Security) with 192.168.1.1 trusted.
-[PASS]  7. Trace aa:bb:cc:dd:ee:ff - dlink1 port 5
+[PASS]  7. Device inventory - 139 devices on 5 switches
+    dlink1  port  5   AA:BB:CC:DD:EE:FF  TP-Link  ROGUE
+    dlink1  port 12   00:1E:58:11:22:33  D-Link
+    dlink2  port  3   3C:07:54:9A:BC:DE  Apple
 [WARN]  9. Hardening audit - dlink1: Loopback Detection: disabled (recommended: enabled, recover time 0)
     Likely cause: -
     Suggested fix: Apply the baseline in USAGE.md.
@@ -572,8 +571,8 @@ tool's DNS "fix" only **requests** this change; apply it in your OS network
 settings (see §10).
 
 **Rogue DHCP (check 6 FAIL).** The report lists each rogue server's IP, MAC, and
-vendor. The tool immediately runs check 7 for each rogue MAC to find the switch
-and port. Unplug that device, then confirm DHCP Server Screening is enabled with
+vendor. Check 7 lists the device table and marks the rogue MAC's switch and port.
+Unplug that device, then confirm DHCP Server Screening is enabled with
 `192.168.1.1` trusted (§5.5).
 
 **Loop or storm (check 8 FAIL, or check 9 loop port).** A port is in loop state.
@@ -591,8 +590,8 @@ management path or switch 1 itself.
 switch with the recommended value. Apply §5 to the named features, save, and
 re-run.
 
-**MAC not found (check 7 WARN).** The device may be offline or not yet learned.
-Re-run after traffic, or check the FDB manually.
+**No devices listed (check 7 WARN).** SNMP is unconfigured or the FDB walk
+returned no rows; confirm SNMP is enabled.
 
 ---
 
@@ -641,9 +640,8 @@ The tool never changes the router or any switch.
   installed`, `raw sockets denied`, ...). Install `scapy`
   (`uv run --with scapy netcheck.py`) and run as root/administrator, or accept
   the WARN.
-- **Check 7 falls back to Telnet.** The SNMP FDB walk returned no rows. Confirm
-  Telnet `debug info` output matches the expected format; `--verbose` captures a
-  sample. Do not trust an unverified parse.
+- **Check 7 shows a switch with no rows.** The FDB walk returned nothing on that
+  firmware; confirm SNMP visibility. The inventory has no Telnet fallback.
 - **Colors look wrong / garbled.** Use `--no-color` (auto-off when not a TTY).
 - **Need more detail on an internal error.** Re-run with `--verbose`.
 

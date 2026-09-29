@@ -1,6 +1,13 @@
 import unittest
 
-from netcheck import Config, Status, check_local_config, parse_ipconfig_windows, parse_linux
+from netcheck import (
+    Config,
+    LocalConfig,
+    Status,
+    check_local_config,
+    parse_ipconfig_windows,
+    parse_linux,
+)
 
 
 IPCONFIG = """
@@ -41,6 +48,15 @@ class TestLocalConfig(unittest.TestCase):
         result = check_local_config(Config(), local_fn=lambda: parse_ipconfig_windows(IPCONFIG_APIPA))
         self.assertIs(result.status, Status.FAIL)
         self.assertIn("APIPA", result.likely_cause or "")
+
+    def test_gateway_mismatch_message_uses_configured_gateway(self):
+        cfg = Config(gateway="10.20.30.1")
+        lc = LocalConfig(ip="192.168.68.160", gateway="192.168.68.1", dns=["1.1.1.1"])
+        result = check_local_config(cfg, local_fn=lambda: lc)
+        self.assertIs(result.status, Status.FAIL)
+        self.assertIn("10.20.30.1", result.likely_cause or "")
+        self.assertIn("10.20.30.1", result.suggested_fix or "")
+        self.assertNotIn("192.168.1.1", result.suggested_fix or "")
 
     def test_parse_linux_skips_loopback(self):
         lc = parse_linux(LINUX_ROUTE, LINUX_ADDR, LINUX_RESOLV)

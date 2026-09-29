@@ -303,7 +303,9 @@ TAG_IPADDRESS = 0x40
 TAG_COUNTER = 0x41
 TAG_GAUGE = 0x42
 TAG_TIMETICKS = 0x43
-_INTEGER_TAGS = {TAG_INTEGER, TAG_COUNTER, TAG_GAUGE, TAG_TIMETICKS, TAG_IPADDRESS}
+TAG_COUNTER64 = 0x46
+_INTEGER_TAGS = {TAG_INTEGER, TAG_COUNTER, TAG_GAUGE, TAG_TIMETICKS, TAG_COUNTER64,
+                 TAG_IPADDRESS}
 
 PDU_GET = 0xA0
 PDU_GET_NEXT = 0xA1
@@ -755,7 +757,7 @@ def check_local_config(cfg: Config, local_fn=detect_local_config) -> CheckResult
     if lc.gateway != cfg.gateway:
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
                            likely_cause=f"Gateway is not {cfg.gateway}.",
-                           suggested_fix="Set the default gateway to 192.168.1.1.")
+                           suggested_fix=f"Set the default gateway to {cfg.gateway}.")
     if not lc.dns:
         return CheckResult(1, "Local config", Status.WARN, detail=detail,
                            likely_cause="No DNS servers configured.",

@@ -21,6 +21,9 @@ class TestSnmp(unittest.TestCase):
         self.assertEqual(decode_value(0x02, b"\x01"), 1)
         self.assertEqual(decode_value(0x41, b"\x00\x64"), 100)
 
+    def test_decode_value_counter64(self):
+        self.assertEqual(decode_value(0x46, b"\x00\x00\x01E"), 325)
+
     def test_encode_request_round_trip(self):
         packed = _encode_request("public", 1, 42, 0xA0, ["1.3.6.1.2.1.1.1.0"])
         version, req_id, varbinds = _parse_response(packed)

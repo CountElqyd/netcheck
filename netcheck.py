@@ -873,58 +873,65 @@ class RogueResponder:
     vendor: str | None = None
 
 
-def parse_nmap_dhcp(text: str) -> list[RogueResponder]:
-    rows: list[RogueResponder] = []
-    server = re.findall(r"Server IP:\s*([\d.]+)", text)
-    macs = re.findall(r"MAC:\s*([0-9A-Fa-f:]{11,17})", text)
-    for index, ip in enumerate(server):
-        mac = macs[index] if index < len(macs) else ""
-        rows.append(RogueResponder(ip, mac, lookup_vendor(mac) if mac else None))
-    return rows
+@dataclass
+class DhcpProbe:
+    responders: list[RogueResponder] | None
+    reason: str = ""
 
 
-def scapy_dhcp_discover(timeout: float = 5.0) -> list[RogueResponder] | None:
+def scapy_dhcp_discover(timeout: float = 5.0) -> DhcpProbe:
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
-        return None
+        return DhcpProbe(None, "scapy not installed")
     try:
         packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
                   / UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=b"\x00" * 16)
                   / DHCP(options=[("message-type", "discover"), "end"]))
         answered, _ = srp(packet, timeout=timeout, verbose=False)
-    except Exception:
-        return None
+    except PermissionError:
+        return DhcpProbe(None, "raw sockets denied (needs root or CAP_NET_RAW)")
+    except OSError as exc:
+        return DhcpProbe(None, f"raw sockets unavailable ({exc})")
+    except Exception as exc:  # noqa: BLE001 - scapy raises assorted types
+        return DhcpProbe(None, f"scapy probe failed: {exc}")
     found: dict[str, RogueResponder] = {}
     for _sent, received in answered:
         if received.haslayer(DHCP):
             server_ip = received[IP].src
             mac = received[Ether].src
             found[server_ip] = RogueResponder(server_ip, mac, lookup_vendor(mac))
-    return list(found.values())
+    return DhcpProbe(list(found.values()))
 
 
-def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
-                      ) -> tuple[CheckResult, list[str]]:
+def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
         discover_fn = lambda cfg=None: scapy_dhcp_discover()
-    responders = discover_fn(cfg)
-    if responders is None:
-        _, out, _ = runner(["nmap", "--script", "broadcast-dhcp-discover",
-                            "-e", "any"], timeout=15)
-        responders = parse_nmap_dhcp(out)
+    probe = discover_fn(cfg)
+    if probe.responders is None:
+        return (CheckResult(6, "Rogue DHCP", Status.WARN,
+                            detail=f"not tested: {probe.reason}",
+                            likely_cause="The rogue-DHCP probe could not run.",
+                            suggested_fix="Install scapy (uv run --with scapy netcheck.py) "
+                                          "and run as root/administrator."),
+                [])
+    responders = probe.responders
     if not responders:
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
-                            detail="no DHCP server answered or could not determine "
-                                   "(needs root/scapy/nmap)"),
+                            detail="probed via scapy; no DHCP server answered on this segment",
+                            likely_cause="No DHCP offer was seen, though this host holds a lease.",
+                            suggested_fix="Re-run while a client renews; confirm the tool runs "
+                                          "as root/administrator."),
                 [])
     rogues = [r for r in responders if r.server_ip != cfg.gateway]
     if not rogues:
         return (CheckResult(6, "Rogue DHCP", Status.PASS,
-                            detail="only the gateway answered"), [])
+                            detail=f"probed via scapy; only the trusted gateway {cfg.gateway} "
+                                   "answered"),
+                [])
     listing = ", ".join(f"{r.server_ip} ({r.mac}{', ' + r.vendor if r.vendor else ''})"
                         for r in rogues)
-    return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=listing,
+    return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=f"via scapy: {listing}",
                         likely_cause="A non-gateway DHCP server is handing out leases.",
                         suggested_fix="Trace the responder MAC (check 7) and unplug it; "
                                       "enable DHCP Server Screening on access ports."),
@@ -1348,7 +1355,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             return
 
         reporter.add(check_switches(cfg, ping_fn=layer_ping))
-        rogue_result, rogue_macs = check_rogue_dhcp(cfg, runner=runner)
+        rogue_result, rogue_macs = check_rogue_dhcp(cfg)
         reporter.add(rogue_result)
 
         measured = {} if no_measure else measure_storm_threshold(cfg, sample_seconds=sample)

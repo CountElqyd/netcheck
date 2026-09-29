@@ -1026,6 +1026,21 @@ def mac_to_oid_suffix(mac: str) -> str:
     return ".".join(str(int(byte, 16)) for byte in mac.replace("-", ":").split(":"))
 
 
+def mac_from_oid_suffix(oid: str, base: str) -> str | None:
+    if not oid.startswith(base + "."):
+        return None
+    parts = oid[len(base) + 1:].split(".")
+    if len(parts) != 6:
+        return None
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    return ":".join(f"{o:02X}" for o in octets)
+
+
 def resolve_ifindex_ports(client) -> dict[int, int]:
     mapping: dict[int, int] = {}
     for oid, value in client.walk(BASE_PORT_IFINDEX_OID):

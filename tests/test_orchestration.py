@@ -48,8 +48,25 @@ class TestOrchestration(unittest.TestCase):
         self.assertIs(check5.status, netcheck.Status.WARN)
         self.assertIn("check failed", check5.detail)
         check7 = next(r for r in reporter.results if r.id == 7)
-        self.assertIs(check7.status, netcheck.Status.PASS)
-        self.assertIn("no rogue devices", check7.detail)
+        self.assertIs(check7.status, netcheck.Status.WARN)
+
+    def test_check7_always_emits_inventory(self):
+        reporter = netcheck.Reporter(color=False)
+        orig = netcheck.check_device_inventory
+        orig_rogue = netcheck.check_rogue_dhcp
+        netcheck.check_device_inventory = lambda *a, **k: netcheck.CheckResult(
+            7, "Device inventory", netcheck.Status.PASS, detail="0 devices")
+        netcheck.check_rogue_dhcp = lambda *a, **k: (
+            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, no_measure=True,
+                             runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.check_device_inventory = orig
+            netcheck.check_rogue_dhcp = orig_rogue
+        check7 = [r for r in reporter.results if r.id == 7]
+        self.assertEqual(len(check7), 1)
+        self.assertIn("Device inventory", check7[0].title)
 
     def test_outer_handler_reports_internal_error(self):
         reporter = netcheck.Reporter(color=False)

@@ -156,6 +156,10 @@ of a Phase A failure. `--quick` runs Phase A only.
 - PASS: only the gateway answers. FAIL: a non-gateway responder appears.
 - Any rogue responder MAC feeds check 7.
 
+> **Superseded 2026-09-30:** check 7 is now the fabric-wide device inventory
+> described in `docs/superpowers/specs/2026-09-30-netcheck-device-inventory-design.md`.
+> The per-MAC trace below is retained for historical context only.
+
 **7. Trace to port** — resolve a suspicious MAC to a switch and port
 - Method A (preferred): SNMP walk the bridge FDB, starting at `dlink1`, then hop
   downstream. Q-BRIDGE `dot1qTpFdbPort`, fall back to BRIDGE `dot1dTpFdbPort`, map

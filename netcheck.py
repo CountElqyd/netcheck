@@ -932,8 +932,9 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[s
                         for r in rogues)
     return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=f"via scapy: {listing}",
                         likely_cause="A non-gateway DHCP server is handing out leases.",
-                        suggested_fix="Trace the responder MAC (check 7) and unplug it; "
-                                      "enable DHCP Server Screening on access ports."),
+                        suggested_fix="Find the responder in the device inventory "
+                                      "(check 7) and unplug it; enable DHCP Server "
+                                      "Screening on access ports."),
             [r.mac for r in rogues if r.mac])
 
 
@@ -946,6 +947,7 @@ _MAC_LINE = re.compile(
 )
 
 
+# Retained: read-only `debug info` parser; no longer wired into check 7; still unit-tested.
 def parse_debug_info(text: str) -> dict[str, int]:
     table: dict[str, int] = {}
     for mac, port in _MAC_LINE.findall(text):
@@ -1019,11 +1021,25 @@ BRIDGE_FDB_OID = "1.3.6.1.2.1.17.4.3.1.2"
 QB_FDB_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 
-CASCADE = {"24": "dlink2", "25": "dlink3", "26": "dlink4", "27": "dlink5"}
-
 
 def mac_to_oid_suffix(mac: str) -> str:
     return ".".join(str(int(byte, 16)) for byte in mac.replace("-", ":").split(":"))
+
+
+def mac_from_oid_suffix(oid: str, base: str) -> str | None:
+    if not oid.startswith(base + "."):
+        return None
+    parts = oid[len(base) + 1:].split(".")
+    if len(parts) < 6:
+        return None
+    parts = parts[-6:]
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    return ":".join(f"{o:02X}" for o in octets)
 
 
 def resolve_ifindex_ports(client) -> dict[int, int]:
@@ -1034,71 +1050,98 @@ def resolve_ifindex_ports(client) -> dict[int, int]:
     return mapping
 
 
-def find_fdb_port(client, mac: str) -> int | None:
-    suffix = "." + mac_to_oid_suffix(mac)
+@dataclass
+class Devicelist:
+    devices: dict[str, dict[str, int]] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
+def _walk_fdb(client) -> list[tuple[str, object, str]]:
+    error: SnmpError | None = None
     for base in (QB_FDB_OID, BRIDGE_FDB_OID):
         try:
             rows = client.walk(base)
-        except SnmpError:
+        except SnmpError as exc:
+            error = exc
             rows = []
         if rows:
+            return [(oid, value, base) for oid, value in rows]
+    if error is not None:
+        raise error
+    return []
+
+
+def collect_devices(cfg: Config, client_factory=SnmpClient) -> Devicelist:
+    result = Devicelist()
+    if not cfg.snmp_community:
+        return result
+    for name, host in cfg.switches.items():
+        result.devices[name] = {}
+        try:
+            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            rows = _walk_fdb(client)
+            if not rows:
+                continue
             ifindex_map = resolve_ifindex_ports(client)
-            for oid, value in rows:
-                if oid.endswith(suffix) and isinstance(value, int):
-                    return ifindex_map.get(value, value)
-    return None
+            for oid, value, base in rows:
+                mac = mac_from_oid_suffix(oid, base)
+                if mac is None or not isinstance(value, int):
+                    continue
+                result.devices[name][mac] = ifindex_map.get(value, value)
+        except (SnmpError, ValueError) as exc:
+            result.errors.append(f"{name}: SNMP unavailable ({exc})")
+    return result
 
 
-def debug_info_lookup(cfg: Config, host: str, mac: str,
-                      telnet_factory=TelnetConnection) -> int | None:
-    factory = telnet_factory or TelnetConnection
-    conn = factory(host, timeout=cfg.timeout)
-    try:
-        conn.connect()
-        conn.login(cfg.switch_user, cfg.switch_pass)
-        output = conn.run_command("debug info", wait=2.0).decode(errors="replace")
-    except (OSError, TelnetError):
-        return None
-    finally:
-        conn.close()
-    return parse_debug_info(output).get(mac.replace("-", ":").upper())
+def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
+    rogue = {m.replace("-", ":").upper() for m in rogue_macs}
+    rows: list[tuple[str, int, str]] = []
+    for switch, macs in devs.devices.items():
+        for mac, port in macs.items():
+            rows.append((switch, port, mac))
+    order = {name: i for i, name in enumerate(devs.devices)}
+    rows.sort(key=lambda r: (order[r[0]], r[1], r[2]))
+    switch_w = max((len(r[0]) for r in rows), default=0)
+    port_w = max((len(str(r[1])) for r in rows), default=0)
+    lines: list[str] = []
+    for switch, port, mac in rows:
+        vendor = lookup_vendor(mac) or ""
+        flag = "  ROGUE" if mac.upper() in rogue else ""
+        lines.append(f"    {switch:<{switch_w}}  port {port:>{port_w}}  "
+                     f"{mac}  {vendor}{flag}")
+    lines.extend(f"    {err}" for err in devs.errors)
+    return "\n".join(lines)
 
 
-def trace_mac(cfg: Config, mac: str, client_factory=SnmpClient,
-              telnet_factory=TelnetConnection) -> CheckResult:
-    telnet_factory = telnet_factory or TelnetConnection
-    name = "dlink1"
-    hops: list[str] = []
-    for _ in range(len(cfg.switches)):
-        host = cfg.switches[name]
-        port: int | None = None
-        if cfg.snmp_community:
-            try:
-                port = find_fdb_port(client_factory(host, cfg.snmp_community,
-                                                    timeout=cfg.timeout), mac)
-            except SnmpError:
-                port = None
-        if port is None:
-            port = debug_info_lookup(cfg, host, mac, telnet_factory)
-        if port is None:
-            trail = "; ".join(hops)
-            detail = f"{trail + '; ' if trail else ''}not found on {name}"
-            return CheckResult(7, f"Trace {mac}", Status.WARN, detail=detail,
-                               likely_cause="MAC not learned; the device may be offline.")
-        hops.append(f"{name} port {port}")
-        if name == "dlink1" and str(port) == "23":
-            return CheckResult(7, f"Trace {mac}", Status.PASS,
-                               detail=f"{name} port 23 (ISP/upstream side)")
-        key = str(port)
-        if name == "dlink1" and key in CASCADE:
-            name = CASCADE[key]
-            continue
-        return CheckResult(7, f"Trace {mac}", Status.PASS,
-                           detail=f"{name}, port {port}",
-                           suggested_fix=f"Unplug the device on {name} port {port}.")
-    trail = "; ".join(hops)
-    return CheckResult(7, f"Trace {mac}", Status.WARN,
-                       detail=f"{trail + ' ' if trail else ''}(loop?)")
+def check_device_inventory(cfg: Config, rogue_macs: list[str],
+                           client_factory=SnmpClient) -> CheckResult:
+    title = "Device inventory"
+    if not cfg.snmp_community:
+        return CheckResult(7, title, Status.WARN,
+                           detail="SNMP community not set; cannot list devices",
+                           likely_cause="The inventory needs read-only SNMP on each switch.",
+                           suggested_fix="Set the SNMP community (NETCHECK_SNMP_COMMUNITY "
+                                         "or netcheck.ini).")
+    devs = collect_devices(cfg, client_factory=client_factory)
+    total = sum(len(m) for m in devs.devices.values())
+    table = format_inventory(devs, rogue_macs)
+    rogue = {m.replace("-", ":").upper() for m in rogue_macs}
+    hits = [(switch, port, mac) for switch, macs in devs.devices.items()
+            for mac, port in macs.items() if mac.upper() in rogue]
+    if hits:
+        where = ", ".join(f"{switch} port {port}" for switch, port, _ in hits)
+        return CheckResult(7, title, Status.FAIL,
+                           detail=f"{total} devices; rogue on {where}\n{table}",
+                           likely_cause="A non-gateway DHCP server is attached to the fabric.",
+                           suggested_fix=f"Unplug the flagged device ({where}); enable DHCP "
+                                         "Server Screening with 192.168.1.1 trusted.")
+    if total == 0 and devs.errors:
+        return CheckResult(7, title, Status.WARN,
+                           detail="inventory unavailable\n" + table,
+                           likely_cause="No switch returned an FDB.",
+                           suggested_fix="Confirm SNMP is enabled and reachable on each switch.")
+    detail = f"{total} devices on {len(devs.devices)} switches"
+    return CheckResult(7, title, Status.PASS, detail=detail + ("\n" + table if table else ""))
 
 
 def check_storm_hints(cfg: Config, gateway_result: PingResult,
@@ -1369,13 +1412,10 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
         rogue_macs: list[str] = []
-        rogue_status: Status | None = None
 
         def _rogue() -> None:
-            nonlocal rogue_status
             result, macs = check_rogue_dhcp(cfg)
             reporter.add(result)
-            rogue_status = result.status
             rogue_macs.extend(macs)
 
         _run_check(6, "Rogue DHCP", _rogue)
@@ -1398,18 +1438,10 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(8, "Loop/storm hints", _storm)
 
-        def _trace() -> None:
-            if rogue_macs:
-                for mac in rogue_macs:
-                    reporter.add(trace_mac(cfg, mac))
-            elif rogue_status is Status.PASS:
-                reporter.add(CheckResult(7, "MAC trace", Status.PASS,
-                                         detail="no rogue devices to trace"))
-            else:
-                reporter.add(CheckResult(7, "MAC trace", Status.WARN,
-                                         detail="skipped: no rogue MACs to trace"))
+        def _inventory() -> None:
+            reporter.add(check_device_inventory(cfg, rogue_macs))
 
-        _run_check(7, "MAC trace", _trace)
+        _run_check(7, "Device inventory", _inventory)
 
         fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
         if fixed:

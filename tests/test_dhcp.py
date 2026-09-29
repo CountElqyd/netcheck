@@ -20,6 +20,9 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.FAIL)
         self.assertEqual(macs, ["AA:BB:CC:DD:EE:FF"])
         self.assertIn("via scapy", result.detail)
+        self.assertNotIn("Trace the responder", result.suggested_fix)
+        self.assertIn("check 7", result.suggested_fix)
+        self.assertIn("inventory", result.suggested_fix)
 
     def test_clean_passes_with_method(self):
         gw = RogueResponder("192.168.1.1", "00:1E:58:00:00:01", "D-Link")

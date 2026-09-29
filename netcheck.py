@@ -947,6 +947,7 @@ _MAC_LINE = re.compile(
 )
 
 
+# Retained: read-only `debug info` parser; no longer wired into check 7; still unit-tested.
 def parse_debug_info(text: str) -> dict[str, int]:
     table: dict[str, int] = {}
     for mac, port in _MAC_LINE.findall(text):
@@ -1029,8 +1030,9 @@ def mac_from_oid_suffix(oid: str, base: str) -> str | None:
     if not oid.startswith(base + "."):
         return None
     parts = oid[len(base) + 1:].split(".")
-    if len(parts) != 6:
+    if len(parts) < 6:
         return None
+    parts = parts[-6:]
     try:
         octets = [int(p) for p in parts]
     except ValueError:
@@ -1097,7 +1099,7 @@ def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
     for switch, macs in devs.devices.items():
         for mac, port in macs.items():
             rows.append((switch, port, mac))
-    rows.sort(key=lambda r: (list(devs.devices).index(r[0]), r[1], r[2]))
+    rows.sort(key=lambda r: (r[1], r[2]))
     switch_w = max((len(r[0]) for r in rows), default=0)
     port_w = max((len(str(r[1])) for r in rows), default=0)
     lines: list[str] = []
@@ -1409,13 +1411,10 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
         rogue_macs: list[str] = []
-        rogue_status: Status | None = None
 
         def _rogue() -> None:
-            nonlocal rogue_status
             result, macs = check_rogue_dhcp(cfg)
             reporter.add(result)
-            rogue_status = result.status
             rogue_macs.extend(macs)
 
         _run_check(6, "Rogue DHCP", _rogue)

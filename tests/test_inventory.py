@@ -19,6 +19,13 @@ class TestMacFromOidSuffix(unittest.TestCase):
         oid = f"{QB_FDB_OID}.{mac_to_oid_suffix(mac)}"
         self.assertEqual(mac_from_oid_suffix(oid, QB_FDB_OID), mac)
 
+    def test_recovers_mac_from_real_qbridge_oid_with_fdbid(self):
+        mac = "00:1E:58:AA:BB:CC"
+        oid = f"{QB_FDB_OID}.1.{mac_to_oid_suffix(mac)}"
+        parts = oid[len(QB_FDB_OID) + 1:].split(".")
+        self.assertEqual(len(parts), 7)
+        self.assertEqual(mac_from_oid_suffix(oid, QB_FDB_OID), mac)
+
     def test_recovers_mac_from_bridge_oid(self):
         mac = "3C:07:54:9A:BC:DE"
         oid = f"{BRIDGE_FDB_OID}.{mac_to_oid_suffix(mac)}"
@@ -28,12 +35,16 @@ class TestMacFromOidSuffix(unittest.TestCase):
         oid = f"{QB_FDB_OID}.0.30.88.170.187.204"
         self.assertIsNone(mac_from_oid_suffix(oid, BRIDGE_FDB_OID))
 
-    def test_returns_none_on_wrong_octet_count(self):
+    def test_returns_none_on_fewer_than_six_octets(self):
         oid = f"{QB_FDB_OID}.0.30.88"
         self.assertIsNone(mac_from_oid_suffix(oid, QB_FDB_OID))
 
     def test_returns_none_on_non_integer_suffix(self):
         oid = f"{QB_FDB_OID}.0.30.88.170.187.x"
+        self.assertIsNone(mac_from_oid_suffix(oid, QB_FDB_OID))
+
+    def test_returns_none_on_out_of_range_octet(self):
+        oid = f"{QB_FDB_OID}.1.0.30.88.170.187.300"
         self.assertIsNone(mac_from_oid_suffix(oid, QB_FDB_OID))
 
 
@@ -52,9 +63,9 @@ class FakeClient:
     def walk(self, base_oid):
         if base_oid == QB_FDB_OID:
             if self.host == "10.90.90.90":
-                return [(f"{QB_FDB_OID}.{_suffix(MAC_A)}", 5)]
+                return [(f"{QB_FDB_OID}.1.{_suffix(MAC_A)}", 5)]
             if self.host == "10.90.90.91":
-                return [(f"{QB_FDB_OID}.{_suffix(MAC_B)}", 8)]
+                return [(f"{QB_FDB_OID}.1.{_suffix(MAC_B)}", 8)]
             return []
         if base_oid == BASE_PORT_IFINDEX_OID:
             return [(f"{BASE_PORT_IFINDEX_OID}.5", 5),

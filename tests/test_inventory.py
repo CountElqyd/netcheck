@@ -148,6 +148,21 @@ class TestFormatInventory(unittest.TestCase):
         self.assertIn(" 3 ", lines[0])
         self.assertIn(" 9 ", lines[1])
 
+    def test_groups_rows_by_switch_before_sorting_by_port(self):
+        mac_c = "00:1E:58:11:22:33"
+        devs = Devicelist(devices={
+            "dlink1": {MAC_A: 9, mac_c: 1},
+            "dlink2": {MAC_B: 3},
+        })
+        lines = [ln for ln in format_inventory(devs, []).splitlines() if "port" in ln]
+        self.assertEqual(len(lines), 3)
+        self.assertIn("dlink1", lines[0])
+        self.assertIn("dlink1", lines[1])
+        self.assertIn("dlink2", lines[2])
+        self.assertIn(" 1 ", lines[0])
+        self.assertIn(" 9 ", lines[1])
+        self.assertIn(" 3 ", lines[2])
+
     def test_includes_vendor(self):
         devs = Devicelist(devices={"dlink1": {"00:1E:58:11:22:33": 5}})
         self.assertIn("D-Link", format_inventory(devs, []))

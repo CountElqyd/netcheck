@@ -1099,7 +1099,8 @@ def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
     for switch, macs in devs.devices.items():
         for mac, port in macs.items():
             rows.append((switch, port, mac))
-    rows.sort(key=lambda r: (r[1], r[2]))
+    order = {name: i for i, name in enumerate(devs.devices)}
+    rows.sort(key=lambda r: (order[r[0]], r[1], r[2]))
     switch_w = max((len(r[0]) for r in rows), default=0)
     port_w = max((len(str(r[1])) for r in rows), default=0)
     lines: list[str] = []

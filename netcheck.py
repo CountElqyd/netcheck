@@ -35,7 +35,6 @@ class CheckResult:
 
 _COLORS = {Status.PASS: "\033[32m", Status.WARN: "\033[33m", Status.FAIL: "\033[31m"}
 _RESET = "\033[0m"
-_TITLE_COL = 24
 
 
 class Reporter:
@@ -56,7 +55,7 @@ class Reporter:
     def render(self) -> str:
         lines: list[str] = []
         heads = [f"{r.id:>2}. {r.title}" for r in self.results]
-        title_width = min(max((len(h) for h in heads), default=0), _TITLE_COL)
+        title_width = max((len(h) for h in heads), default=0)
         for head, r in zip(heads, self.results):
             plain_tag = f"[{r.status.value}]"
             tag = plain_tag

@@ -45,6 +45,13 @@ class TestReporter(unittest.TestCase):
         lines = [ln for ln in r.render().splitlines() if ln.startswith("[PASS]")]
         self.assertEqual(lines[0].index(" - "), lines[1].index(" - "))
 
+    def test_render_aligns_detail_column_with_long_title(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.PASS, detail="one"))
+        r.add(CheckResult(6, "Trace aa:bb:cc:dd:ee:ff", Status.PASS, detail="two"))
+        lines = [ln for ln in r.render().splitlines() if ln.startswith("[PASS]")]
+        self.assertEqual(lines[0].index(" - "), lines[1].index(" - "))
+
     def test_render_placeholders_missing_cause(self):
         r = Reporter(color=False)
         r.add(CheckResult(9, "Hardening audit", Status.WARN, suggested_fix="do x"))

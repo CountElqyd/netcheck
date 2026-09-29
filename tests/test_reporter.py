@@ -25,6 +25,14 @@ class TestReporter(unittest.TestCase):
         self.assertIn("Likely cause: rogue server", text)
         self.assertIn("Suggested fix: unplug it", text)
 
+    def test_render_emits_each_cause(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.FAIL, likely_cause="cause one"))
+        r.add(CheckResult(2, "B", Status.FAIL, likely_cause="cause two"))
+        text = r.render()
+        self.assertIn("cause one", text)
+        self.assertIn("cause two", text)
+
 
 if __name__ == "__main__":
     unittest.main()

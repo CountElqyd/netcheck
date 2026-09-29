@@ -62,13 +62,10 @@ class Reporter:
             if r.detail:
                 line += f"  - {r.detail}"
             lines.append(line)
-        causes = [r for r in self.results if r.likely_cause]
-        fixes = [r for r in self.results if r.suggested_fix]
-        if causes:
-            lines.append("")
-            lines.append("Likely cause: " + causes[0].likely_cause)
-        if fixes:
-            lines.append("Suggested fix: " + fixes[0].suggested_fix)
+            if r.likely_cause:
+                lines.append("    Likely cause: " + r.likely_cause)
+            if r.suggested_fix:
+                lines.append("    Suggested fix: " + r.suggested_fix)
         return "\n".join(lines)
 
 

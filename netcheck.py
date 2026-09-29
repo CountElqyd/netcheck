@@ -35,6 +35,7 @@ class CheckResult:
 
 _COLORS = {Status.PASS: "\033[32m", Status.WARN: "\033[33m", Status.FAIL: "\033[31m"}
 _RESET = "\033[0m"
+_TITLE_COL = 24
 
 
 class Reporter:
@@ -54,18 +55,27 @@ class Reporter:
 
     def render(self) -> str:
         lines: list[str] = []
-        for r in self.results:
-            tag = f"[{r.status.value}]"
+        heads = [f"{r.id:>2}. {r.title}" for r in self.results]
+        title_width = min(max((len(h) for h in heads), default=0), _TITLE_COL)
+        for head, r in zip(heads, self.results):
+            plain_tag = f"[{r.status.value}]"
+            tag = plain_tag
             if self.color:
-                tag = f"{_COLORS[r.status]}{tag}{_RESET}"
-            line = f"{tag} {r.id}. {r.title}"
+                tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}"
+            line = f"{tag} {head:<{title_width}}"
             if r.detail:
-                line += f"  - {r.detail}"
+                line += f" - {r.detail}"
             lines.append(line)
-            if r.likely_cause:
-                lines.append("    Likely cause: " + r.likely_cause)
-            if r.suggested_fix:
-                lines.append("    Suggested fix: " + r.suggested_fix)
+            if r.likely_cause or r.suggested_fix:
+                lines.append("    Likely cause: " + (r.likely_cause or "-"))
+                lines.append("    Suggested fix: " + (r.suggested_fix or "-"))
+        if self.results:
+            counts = {s: sum(1 for r in self.results if r.status is s) for s in Status}
+            lines.append("")
+            lines.append(f"Summary: {counts[Status.PASS]} PASS · {counts[Status.WARN]} WARN · "
+                         f"{counts[Status.FAIL]} FAIL  (exit code {self.exit_code()})")
+            lines.append("Legend:  PASS healthy  ·  WARN needs attention  ·  "
+                         "FAIL broken — fix FAILs first")
         return "\n".join(lines)
 
 

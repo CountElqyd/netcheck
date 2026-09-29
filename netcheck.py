@@ -850,17 +850,17 @@ def scapy_dhcp_discover(timeout: float = 5.0) -> list[RogueResponder] | None:
 def check_rogue_dhcp(cfg: Config, discover_fn=None, runner=run_command
                       ) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
-        discover_fn = scapy_dhcp_discover
+        discover_fn = lambda cfg=None: scapy_dhcp_discover()
     responders = discover_fn(cfg)
     if responders is None:
-        responders = []
         _, out, _ = runner(["nmap", "--script", "broadcast-dhcp-discover",
                             "-e", "any"], timeout=15)
         responders = parse_nmap_dhcp(out)
-        if not responders:
-            return (CheckResult(6, "Rogue DHCP", Status.WARN,
-                                detail="could not determine (needs root/scapy/nmap)"),
-                    [])
+    if not responders:
+        return (CheckResult(6, "Rogue DHCP", Status.WARN,
+                            detail="no DHCP server answered or could not determine "
+                                   "(needs root/scapy/nmap)"),
+                [])
     rogues = [r for r in responders if r.server_ip != cfg.gateway]
     if not rogues:
         return (CheckResult(6, "Rogue DHCP", Status.PASS,

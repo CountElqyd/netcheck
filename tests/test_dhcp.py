@@ -36,7 +36,12 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.PASS)
 
     def test_unknown_warns(self):
-        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: None)
+        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: None,
+                                     runner=lambda *a, **k: (1, "", ""))
+        self.assertIs(result.status, Status.WARN)
+
+    def test_no_responders_warns(self):
+        result, _ = check_rogue_dhcp(Config(), discover_fn=lambda cfg=None: [])
         self.assertIs(result.status, Status.WARN)
 
 

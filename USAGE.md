@@ -329,12 +329,12 @@ Notes:
 - **Reachability:** allow UDP 161 from the management laptop, which must carry
   the `10.90.90.0/8` alias from §3.3.
 
-### 4.4 Telnet is not used
+### 4.4 Telnet has no runtime use
 
 The DGS-1210 Telnet CLI exists on this firmware, but the tool does **not** use
-it. In particular, the device inventory (check 7) has **no Telnet fallback**: if
-the SNMP FDB walk returns nothing, the switch's rows are simply empty. SNMP
-(§4.3) is the only way the tool reads switch state.
+it at runtime. In particular, the device inventory (check 7) has **no Telnet
+fallback**: if the SNMP FDB walk returns nothing, the switch's rows are simply
+empty. SNMP (§4.3) is the only way the tool reads switch state.
 
 Telnet cannot configure LBD/STP/Storm/DHCP-screening, which is why all
 remediation is in the web UI.
@@ -537,9 +537,10 @@ non-gateway DHCP responders (check 6) are marked `ROGUE`.
 [PASS]  1. Local config   - 192.168.1.50 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
 [FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
     Likely cause: A non-gateway DHCP server is handing out leases.
-    Suggested fix: Trace the responder MAC (check 7) and unplug it; enable DHCP
-                   Server Screening (Security) with 192.168.1.1 trusted.
-[PASS]  7. Device inventory - 139 devices on 5 switches
+    Suggested fix: Find the responder in the device inventory (check 7) and unplug
+                   it; enable DHCP Server Screening (Security) with 192.168.1.1
+                   trusted.
+[FAIL]  7. Device inventory - 139 devices; rogue on dlink1 port 5
     dlink1  port  5   AA:BB:CC:DD:EE:FF  TP-Link  ROGUE
     dlink1  port 12   00:1E:58:11:22:33  D-Link
     dlink2  port  3   3C:07:54:9A:BC:DE  Apple
@@ -547,7 +548,7 @@ non-gateway DHCP responders (check 6) are marked `ROGUE`.
     Likely cause: -
     Suggested fix: Apply the baseline in USAGE.md.
 
-Summary: 2 PASS · 1 WARN · 1 FAIL  (exit code 2)
+Summary: 1 PASS · 1 WARN · 2 FAIL  (exit code 2)
 Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
 ```
 

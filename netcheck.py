@@ -718,5 +718,80 @@ def check_local_config(cfg: Config, local_fn=detect_local_config) -> CheckResult
     return CheckResult(1, "Local config", Status.PASS, detail=detail)
 
 
+def _ping_verdict(result: PingResult, warn_loss: float = 20.0) -> Status:
+    if result.loss_pct >= 100.0 or result.received == 0:
+        return Status.FAIL
+    if result.loss_pct > warn_loss or (result.max_ms is not None and result.min_ms is not None
+                                       and result.max_ms - result.min_ms > 30):
+        return Status.WARN
+    return Status.PASS
+
+
+def check_gateway(cfg: Config, ping_fn=ping) -> CheckResult:
+    result = ping_fn(cfg.gateway, count=10, timeout=cfg.timeout)
+    status = _ping_verdict(result)
+    detail = (f"loss {result.loss_pct:.0f}% avg {result.avg_ms} ms "
+              f"jitter {(result.max_ms - result.min_ms) if result.max_ms is not None and result.min_ms is not None else 'n/a'}")
+    if status is Status.FAIL:
+        return CheckResult(2, "Gateway", status, detail=detail,
+                           likely_cause="The default gateway is not answering.",
+                           suggested_fix="Verify the switch/uplink path to the router, then retry.")
+    return CheckResult(2, "Gateway", status, detail=detail)
+
+
+def check_internet(cfg: Config, ping_fn=ping) -> CheckResult:
+    reachable = [h for h in cfg.public_dns if ping_fn(h, count=4, timeout=cfg.timeout).received > 0]
+    detail = "reachable: " + (",".join(reachable) or "none")
+    if len(reachable) == len(cfg.public_dns):
+        return CheckResult(3, "Internet by IP", Status.PASS, detail=detail)
+    if reachable:
+        return CheckResult(3, "Internet by IP", Status.WARN, detail=detail,
+                           likely_cause="Only some public IPs answer; upstream path is unstable.",
+                           suggested_fix="Check the ISP router/uplink and run the fabric checks.")
+    return CheckResult(3, "Internet by IP", Status.FAIL, detail=detail,
+                       likely_cause="No public IP answers; the upstream is down.",
+                       suggested_fix="Check the ISP router WAN/link; you cannot fix it from the switches.")
+
+
+def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
+    rows: list[str] = []
+    isp_ok = False
+    public_ok = False
+    for server in cfg.dns_servers:
+        ok, ms, _ = query_fn(server, cfg.domain, timeout=cfg.timeout)
+        isp_ok = isp_ok or ok
+        rows.append(f"{server}:{'ok' if ok else 'fail'} {ms:.0f}ms")
+    for server in cfg.public_dns:
+        ok, ms, _ = query_fn(server, cfg.domain, timeout=cfg.timeout)
+        public_ok = public_ok or ok
+        rows.append(f"{server}:{'ok' if ok else 'fail'} {ms:.0f}ms")
+    detail = " ".join(rows)
+    if isp_ok and public_ok:
+        return CheckResult(4, "DNS", Status.PASS, detail=detail)
+    if public_ok and not isp_ok:
+        return CheckResult(4, "DNS", Status.FAIL, detail=detail,
+                           likely_cause="ISP DNS servers fail while public DNS works (ISP DNS problem).",
+                           suggested_fix="Set this PC's DNS to 1.1.1.1/8.8.8.8.")
+    if isp_ok and not public_ok:
+        return CheckResult(4, "DNS", Status.WARN, detail=detail)
+    return CheckResult(4, "DNS", Status.FAIL, detail=detail,
+                       likely_cause="No DNS server answered.",
+                       suggested_fix="Check the gateway/uplink; try public DNS 1.1.1.1.")
+
+
+def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=detect_local_config,
+                     ping_fn=ping, query_fn=dns_query) -> None:
+    local = check_local_config(cfg, local_fn=local_fn)
+    reporter.add(local)
+    if local.status is Status.FAIL:
+        return
+    gateway = check_gateway(cfg, ping_fn=ping_fn)
+    reporter.add(gateway)
+    if gateway.status is Status.FAIL:
+        return
+    reporter.add(check_internet(cfg, ping_fn=ping_fn))
+    reporter.add(check_dns(cfg, query_fn=query_fn))
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

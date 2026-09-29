@@ -158,5 +158,94 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
     return cfg
 
 
+def ber_encode_length(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    body = b""
+    while n:
+        body = bytes([n & 0xFF]) + body
+        n >>= 8
+    return bytes([0x80 | len(body)]) + body
+
+
+def ber_encode_integer(n: int) -> bytes:
+    if n == 0:
+        body = b"\x00"
+    else:
+        body = b""
+        while n > 0:
+            body = bytes([n & 0xFF]) + body
+            n >>= 8
+        if body[0] & 0x80:
+            body = b"\x00" + body
+    return b"\x02" + ber_encode_length(len(body)) + body
+
+
+def ber_encode_octet_string(data: bytes) -> bytes:
+    return b"\x04" + ber_encode_length(len(data)) + data
+
+
+def ber_encode_null() -> bytes:
+    return b"\x05\x00"
+
+
+def ber_encode_oid(oid: str) -> bytes:
+    parts = [int(p) for p in oid.split(".")]
+    body = [parts[0] * 40 + parts[1]]
+    for n in parts[2:]:
+        if n < 0x80:
+            body.append(n)
+            continue
+        chunk = [n & 0x7F]
+        n >>= 7
+        while n:
+            chunk.append((n & 0x7F) | 0x80)
+            n >>= 7
+        body.extend(reversed(chunk))
+    return b"\x06" + ber_encode_length(len(body)) + bytes(body)
+
+
+def ber_encode_sequence(items: list[bytes]) -> bytes:
+    body = b"".join(items)
+    return b"\x30" + ber_encode_length(len(body)) + body
+
+
+def ber_decode_tlv(data: bytes, offset: int = 0) -> tuple[int, bytes, int]:
+    tag = data[offset]
+    offset += 1
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        num = length & 0x7F
+        length = int.from_bytes(data[offset:offset + num], "big")
+        offset += num
+    value = data[offset:offset + length]
+    return tag, value, offset + length
+
+
+def ber_decode_integer(value: bytes) -> int:
+    n = int.from_bytes(value, "big")
+    if value and value[0] & 0x80:
+        n -= 1 << (8 * len(value))
+    return n
+
+
+def ber_decode_oid(value: bytes) -> str:
+    if not value:
+        return ""
+    parts = [value[0] // 40, value[0] % 40]
+    i = 1
+    while i < len(value):
+        n = 0
+        while True:
+            byte = value[i]
+            i += 1
+            n = (n << 7) | (byte & 0x7F)
+            if not byte & 0x80:
+                break
+        parts.append(n)
+    return ".".join(str(p) for p in parts)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

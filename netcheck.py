@@ -551,5 +551,65 @@ def ping(host: str, count: int = 10, timeout: float = 3.0,
     return parse_ping_output(host, out)
 
 
+import struct
+import time
+
+
+def build_dns_query(name: str, txid: int) -> bytes:
+    header = struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+    question = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
+    return header + question + struct.pack(">HH", 1, 1)
+
+
+def _skip_dns_name(data: bytes, offset: int) -> int:
+    while True:
+        length = data[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0:
+            return offset + 2
+        offset += 1 + length
+
+
+def parse_dns_a(data: bytes) -> list[str]:
+    if len(data) < 12:
+        return []
+    _txid, flags, qdcount, ancount, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
+    if flags & 0x000F:
+        return []
+    offset = 12
+    for _ in range(qdcount):
+        offset = _skip_dns_name(data, offset) + 4
+    answers: list[str] = []
+    for _ in range(ancount):
+        offset = _skip_dns_name(data, offset)
+        if offset + 10 > len(data):
+            break
+        rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[offset:offset + 10])
+        offset += 10
+        rdata = data[offset:offset + rdlen]
+        offset += rdlen
+        if rtype == 1 and rdlen == 4:
+            answers.append(socket.inet_ntoa(rdata))
+    return answers
+
+
+def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float, list[str]]:
+    txid = random.randint(0, 0xFFFF)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    started = time.monotonic()
+    try:
+        sock.sendto(build_dns_query(name, txid), (server, 53))
+        data, _ = sock.recvfrom(2048)
+    except OSError:
+        return False, 0.0, []
+    finally:
+        sock.close()
+    elapsed = (time.monotonic() - started) * 1000
+    answers = parse_dns_a(data)
+    return bool(answers), elapsed, answers
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -13,8 +13,55 @@ baseline.
 
 ---
 
+## 0. Quickstart (3 commands)
+
+The fastest path. **`uv` is the only prerequisite** — it downloads a suitable
+Python by itself, so you need no `pip`, no virtualenv, and no pre-installed
+Python.
+
+```bash
+git clone https://github.com/CountElqyd/simple-netcheck.git
+cd simple-netcheck
+uv run netcheck.py --no-fix
+```
+
+That is clone → enter → run. If you have **Python 3.10+** already installed, the
+last command can instead be `python3 netcheck.py --no-fix`.
+
+Install `uv` if you do not have it:
+
+```bash
+# Linux / macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows PowerShell
+winget install --id=astral-sh.uv
+```
+
+**Enable the rogue-DHCP probe (check 6) and SNMP extras:**
+
+```bash
+uv run --with scapy netcheck.py --no-fix   # + rogue-DHCP broadcast probe (needs admin/root)
+```
+
+**Configure before a real run** (secrets stay out of git — the file is
+gitignored):
+
+```bash
+cp netcheck.ini.example netcheck.ini       # then set snmp_community etc.
+```
+
+> **Before checks 1–4 pass** you must be on the office LAN, and **before checks
+> 6–9 work** you need the one-time setup in [§3](#3-management-laptop-prerequisites)
+> (the `10.90.90.0/8` management alias, admin rights for scapy) and
+> [§4](#4-switch-prerequisites-one-time-web-ui) (read-only SNMP on each switch).
+> See [§6](#6-get-the-tool-and-first-run) for the download-and-run alternative.
+
+---
+
 ## Contents
 
+0. [Quickstart (3 commands)](#0-quickstart-3-commands)
 1. [Network map and value checklist](#1-network-map-and-value-checklist)
 2. [Baseline measurement first](#2-baseline-measurement-first)
 3. [Management-laptop prerequisites](#3-management-laptop-prerequisites)
@@ -460,24 +507,41 @@ patterns.
 
 ## 6. Get the tool and first run
 
-### 6.1 Download-and-run from a GitHub Release (recommended)
+### 6.1 Clone and run (quickstart)
+
+The fastest path — see [§0](#0-quickstart-3-commands). Three commands, no extra
+installation beyond `uv`:
+
+```bash
+git clone https://github.com/CountElqyd/simple-netcheck.git
+cd simple-netcheck
+uv run netcheck.py --no-fix
+```
+
+### 6.2 Download-and-run from a GitHub Release
+
+Use this when you want a single pinned file without cloning. The links below
+resolve **after the first tagged release** (`v0.1.0` or later).
 
 ```bash
 # Linux / macOS
-curl -sSLO https://github.com/<owner>/<repo>/releases/latest/download/netcheck.py
-curl -sSLO https://github.com/<owner>/<repo>/releases/latest/download/SHA256SUMS
+curl -sSLO https://github.com/CountElqyd/simple-netcheck/releases/latest/download/netcheck.py
+curl -sSLO https://github.com/CountElqyd/simple-netcheck/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 python3 netcheck.py
 ```
 
 ```powershell
 # Windows PowerShell
-iwr -useb https://github.com/<owner>/<repo>/releases/latest/download/netcheck.py -OutFile netcheck.py
+iwr -useb https://github.com/CountElqyd/simple-netcheck/releases/latest/download/netcheck.py -OutFile netcheck.py
 Get-FileHash netcheck.py -Algorithm SHA256   # compare with the published SHA256SUMS
 py netcheck.py
 ```
 
-### 6.2 Optional: `uv` (no pre-installed Python)
+### 6.3 Optional: `uv` (no pre-installed Python)
+
+`uv run` works from either the cloned directory or alongside a downloaded
+`netcheck.py`:
 
 ```bash
 uv run netcheck.py                       # uv fetches a suitable Python
@@ -485,11 +549,11 @@ uv run --with scapy netcheck.py          # + rogue-DHCP probe
 uv run --with pysnmp netcheck.py         # + SNMP v3
 ```
 
-### 6.3 First run
+### 6.4 First run
 
 ```bash
 cp netcheck.ini.example netcheck.ini     # then set snmp_community etc.
-python3 netcheck.py
+python3 netcheck.py                      # or: uv run netcheck.py
 ```
 
 Expect one `[PASS]`/`[WARN]`/`[FAIL]` line per check. Use `--log` to keep a

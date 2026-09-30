@@ -1,3 +1,4 @@
+import contextlib
 import io
 import unittest
 
@@ -18,6 +19,21 @@ class TestOrchestration(unittest.TestCase):
         self.assertTrue(args.quick)
         self.assertTrue(args.no_measure)
         self.assertTrue(args.no_fix)
+
+    def test_sample_and_timeout_reject_non_positive(self):
+        parser = netcheck.build_parser()
+        for flag in ("--sample", "--timeout"):
+            for value in ("0", "-5"):
+                with self.assertRaises(SystemExit) as cm:
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        parser.parse_args([flag, value])
+                self.assertEqual(cm.exception.code, 2)
+
+    def test_sample_and_timeout_accept_positive(self):
+        parser = netcheck.build_parser()
+        args = parser.parse_args(["--sample", "12.5", "--timeout", "1"])
+        self.assertEqual(args.sample, 12.5)
+        self.assertEqual(args.timeout, 1.0)
 
     def test_main_version(self):
         self.assertEqual(netcheck.main(["--version"]), 0)

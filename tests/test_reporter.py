@@ -74,6 +74,18 @@ class TestReporter(unittest.TestCase):
         self.assertIn("cause one", text)
         self.assertIn("cause two", text)
 
+    def test_render_color_override(self):
+        r = Reporter(color=True)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        self.assertIn("\033", r.render())
+        self.assertNotIn("\033", r.render(color=False))
+
+    def test_render_default_follows_reporter_color(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        self.assertNotIn("\033", r.render())
+        self.assertIn("\033", r.render(color=True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 import enum
@@ -52,14 +52,15 @@ class Reporter:
             return 1
         return 0
 
-    def render(self) -> str:
+    def render(self, color: bool | None = None) -> str:
+        use_color = self.color if color is None else color
         lines: list[str] = []
         heads = [f"{r.id:>2}. {r.title}" for r in self.results]
         title_width = max((len(h) for h in heads), default=0)
         for head, r in zip(heads, self.results):
             plain_tag = f"[{r.status.value}]"
             tag = plain_tag
-            if self.color:
+            if use_color:
                 tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}"
             line = f"{tag} {head:<{title_width}}"
             if r.detail:
@@ -78,6 +79,16 @@ class Reporter:
         return "\n".join(lines)
 
 
+def _positive_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number: {text!r}")
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="netcheck", description=__doc__)
     parser.add_argument("--version", action="version", version=f"netcheck {__version__}")
@@ -85,16 +96,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log", action="store_true", help="save a timestamped report")
     parser.add_argument("--config", default="netcheck.ini", help="path to an INI config file")
     parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
-    parser.add_argument("--sample", type=float, default=30.0,
+    parser.add_argument("--sample", type=_positive_float, default=30.0,
                         help="counter-sampling window for storm thresholds (seconds)")
     parser.add_argument("--no-measure", action="store_true",
                         help="skip rate sampling; use the static storm baseline")
-    parser.add_argument("--timeout", type=float, default=3.0,
+    parser.add_argument("--timeout", type=_positive_float, default=3.0,
                         help="per-operation network timeout (seconds)")
     parser.add_argument("--verbose", action="store_true",
                         help="Show full tracebacks on internal errors")
-    parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--no-color", action="store_true",
+                        help="disable ANSI color output")
     return parser
+
+
+def _log_path(stamp: str) -> str:
+    path = f"netcheck-{stamp}.log"
+    counter = 1
+    while os.path.exists(path):
+        path = f"netcheck-{stamp}-{counter}.log"
+        counter += 1
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -116,8 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if args.log:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        with open(f"netcheck-{stamp}.log", "w") as fh:
-            fh.write(text + "\n")
+        with open(_log_path(stamp), "w") as fh:
+            fh.write(reporter.render(color=False) + "\n")
     return reporter.exit_code()
 
 

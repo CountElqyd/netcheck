@@ -672,13 +672,14 @@ returned no rows; confirm SNMP is enabled.
 
 | Flag | Effect |
 |---|---|
+| `-h`, `--help` | Show the help message and exit |
 | `--quick` | Connectivity layers only (checks 1–4); skips fabric checks and fixes |
-| `--log` | Save a timestamped report (`netcheck-YYYYmmdd-HHMMSS.log`) |
+| `--log` | Save a timestamped report (`netcheck-YYYYmmdd-HHMMSS.log`); written without ANSI color |
 | `--config PATH` | Use a specific INI file (default `netcheck.ini`) |
 | `--no-fix` | Never prompt for fixes (also automatic when not a TTY) |
-| `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default `30`) |
+| `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default `30`; must be `> 0`) |
 | `--no-measure` | Skip rate sampling; use the static storm baseline |
-| `--timeout N` | Per-network-operation timeout in seconds (default `3`) |
+| `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
 | `--verbose` | Show full tracebacks and raw errors on internal failures |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY) |
 | `--version` | Print the tool version and exit |

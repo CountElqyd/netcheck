@@ -330,7 +330,7 @@ printed or written to the log. The storm-control recommendation reads INI keys
 | `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default 30). |
 | `--no-measure` | Skip rate sampling; use the static storm-control baseline. |
 | `--timeout N` | Per-network-operation timeout (default 3 s). |
-| `--verbose` | Show full tracebacks and raw errors on internal failures. |
+| `--verbose` | Print diagnostics to stderr: a config/platform preamble, per-check markers, and a Python traceback for internal failures, including handled degradations. |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY). |
 | `--version` | Print the tool version and exit. |
 
@@ -357,10 +357,12 @@ a fix but no cause prints only the fix).
 - Unchanged default `admin`/`admin`: `WARN` prominently.
 - All external commands run with explicit timeouts; no shell interpolation of
   untrusted input.
-- `--verbose` prints a Python traceback only when an **unexpected** internal
-  exception is caught (a `98. Internal error` line, or a check reporting
-  `check failed: …`). It has no effect on normal runs: expected degradations
-  already carry their reason in the result detail.
+- `--verbose` prints diagnostics to **stderr**: a config/platform preamble,
+  per-check start markers, and a Python traceback for every error it handles —
+  both unexpected exceptions (a `98. Internal error` line, or a check reporting
+  `check failed: …`) and gracefully-degraded ones (per-switch SNMP failures, the
+  `scapy` probe, storm sampling). Diagnostics are not written to the `--log`
+  report; the report text is unchanged.
 
 > **Superseded 2026-09-30:** the Telnet `debug info` fallback for check 7 has been
 > removed (see `docs/superpowers/specs/2026-09-30-netcheck-device-inventory-design.md`).

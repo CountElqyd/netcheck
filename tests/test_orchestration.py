@@ -119,6 +119,68 @@ class TestOrchestration(unittest.TestCase):
         self.assertNotIn("Traceback", quiet)
         self.assertTrue(any(r.id == 98 for r in quiet_reporter.results))
 
+    def test_verbose_preamble_reports_effective_config(self):
+        reporter = netcheck.Reporter(color=False)
+        stderr = io.StringIO()
+        orig = netcheck.run_layer_checks
+        netcheck.run_layer_checks = lambda *a, **k: None
+        try:
+            with contextlib.redirect_stderr(stderr):
+                netcheck.run_all(netcheck.Config(verbose=True), reporter, quick=True,
+                                 runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.run_layer_checks = orig
+        out = stderr.getvalue()
+        self.assertIn("[verbose]", out)
+        self.assertIn("gateway=", out)
+        self.assertIn("snmp_community=not set", out)
+        self.assertNotIn("\033", out)
+
+    def test_no_verbose_emits_no_diagnostics(self):
+        reporter = netcheck.Reporter(color=False)
+        stderr = io.StringIO()
+        orig = netcheck.run_layer_checks
+        netcheck.run_layer_checks = lambda *a, **k: None
+        try:
+            with contextlib.redirect_stderr(stderr):
+                netcheck.run_all(netcheck.Config(), reporter, quick=True,
+                                 runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.run_layer_checks = orig
+        self.assertNotIn("[verbose]", stderr.getvalue())
+
+    def test_verbose_traces_swallowed_snmp_error(self):
+        def boom(*a, **k):
+            raise netcheck.SnmpError("kaboom")
+
+        loud_cfg = netcheck.Config(snmp_community="public", verbose=True,
+                                   switches={"dlink1": "10.90.90.90"})
+        quiet_cfg = netcheck.Config(snmp_community="public",
+                                    switches={"dlink1": "10.90.90.90"})
+        loud = io.StringIO()
+        quiet = io.StringIO()
+        with contextlib.redirect_stderr(loud):
+            netcheck.check_hardening(loud_cfg, client_factory=boom)
+        with contextlib.redirect_stderr(quiet):
+            netcheck.check_hardening(quiet_cfg, client_factory=boom)
+        self.assertIn("Traceback", loud.getvalue())
+        self.assertIn("kaboom", loud.getvalue())
+        self.assertNotIn("Traceback", quiet.getvalue())
+
+    def test_verbose_traces_storm_measure_error(self):
+        def boom(*a, **k):
+            raise netcheck.SnmpError("storm boom")
+
+        cfg = netcheck.Config(snmp_community="public", verbose=True,
+                              switches={"dlink1": "10.90.90.90"})
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = netcheck.measure_storm_threshold(
+                cfg, sample_seconds=0.01, client_factory=boom)
+        self.assertEqual(result, {})
+        self.assertIn("Traceback", stderr.getvalue())
+        self.assertIn("storm boom", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

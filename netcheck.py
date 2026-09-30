@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=_positive_float, default=3.0,
                         help="per-operation network timeout (seconds)")
     parser.add_argument("--verbose", action="store_true",
-                        help="print a traceback on an unexpected internal error")
+                        help="print diagnostics (config summary, error tracebacks)")
     parser.add_argument("--no-color", action="store_true",
                         help="disable ANSI color output")
     return parser
@@ -126,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     cfg = load_config(path=args.config)
     cfg.timeout = args.timeout
+    cfg.verbose = args.verbose
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, no_measure=args.no_measure,
@@ -163,6 +164,7 @@ class Config:
     storm_safety_factor: int = 4
     storm_floor_kbps: int = 10000
     timeout: float = 3.0
+    verbose: bool = False
 
 
 _ENV_MAP = {
@@ -175,6 +177,17 @@ _ENV_MAP = {
     "NETCHECK_STORM_SAFETY_FACTOR": "storm_safety_factor",
     "NETCHECK_STORM_FLOOR_KBPS": "storm_floor_kbps",
 }
+
+
+def _diag(cfg, message: str) -> None:
+    if getattr(cfg, "verbose", False):
+        print(f"[verbose] {message}", file=sys.stderr)
+
+
+def _diag_exc(cfg) -> None:
+    if getattr(cfg, "verbose", False):
+        import traceback
+        traceback.print_exc()
 
 
 def _to_int(value, default):
@@ -899,7 +912,7 @@ class DhcpProbe:
     reason: str = ""
 
 
-def scapy_dhcp_discover(timeout: float = 5.0) -> DhcpProbe:
+def scapy_dhcp_discover(timeout: float = 5.0, cfg=None) -> DhcpProbe:
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
@@ -912,8 +925,10 @@ def scapy_dhcp_discover(timeout: float = 5.0) -> DhcpProbe:
     except PermissionError:
         return DhcpProbe(None, "raw sockets denied (needs root or CAP_NET_RAW)")
     except OSError as exc:
+        _diag_exc(cfg)
         return DhcpProbe(None, f"raw sockets unavailable ({exc})")
     except Exception as exc:  # noqa: BLE001 - scapy raises assorted types
+        _diag_exc(cfg)
         return DhcpProbe(None, f"scapy probe failed: {exc}")
     found: dict[str, RogueResponder] = {}
     for _sent, received in answered:
@@ -926,7 +941,7 @@ def scapy_dhcp_discover(timeout: float = 5.0) -> DhcpProbe:
 
 def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
-        discover_fn = lambda cfg=None: scapy_dhcp_discover()
+        discover_fn = lambda cfg=None: scapy_dhcp_discover(cfg=cfg)
     probe = discover_fn(cfg)
     if probe.responders is None:
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
@@ -1110,6 +1125,7 @@ def collect_devices(cfg: Config, client_factory=SnmpClient) -> Devicelist:
                     continue
                 result.devices[name][mac] = ifindex_map.get(value, value)
         except (SnmpError, ValueError) as exc:
+            _diag_exc(cfg)
             result.errors.append(f"{name}: SNMP unavailable ({exc})")
     return result
 
@@ -1281,6 +1297,7 @@ def check_hardening(cfg: Config, measured: dict | None = None,
             if ports:
                 loop_ports[name] = ports
         except (SnmpError, ValueError) as exc:
+            _diag_exc(cfg)
             findings.append(f"{name}: SNMP unavailable ({exc})")
     if not findings and not loop_ports:
         return CheckResult(9, "Hardening audit", Status.PASS,
@@ -1330,6 +1347,7 @@ def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
             time.sleep(sample_seconds)
             after = _counter_snapshot(client)
         except SnmpError:
+            _diag_exc(cfg)
             return name, {}
         link_kbps = 1_000_000
         peak = 0.0
@@ -1408,6 +1426,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
             tty=None, runner=run_command, verbose: bool = False) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
+        _diag(cfg, f"check {check_id}: {title}")
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - isolate each fabric check
@@ -1419,10 +1438,19 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                                      likely_cause="An unexpected error interrupted this check.",
                                      suggested_fix="Re-run with --verbose for details."))
 
+    _diag(cfg, f"netcheck {__version__} on {sys.platform}, "
+               f"python {sys.version.split()[0]}")
+    _diag(cfg, f"gateway={cfg.gateway} dns={','.join(cfg.dns_servers)} "
+               f"domain={cfg.domain} timeout={cfg.timeout} "
+               f"switches={len(cfg.switches)} sample={sample} "
+               f"quick={quick} no_measure={no_measure}")
+    _diag(cfg, "snmp_community=" + ("set" if cfg.snmp_community else "not set"))
+
     try:
         layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
             server, name, timeout=kw.get("timeout", cfg.timeout))
+        _diag(cfg, "checks 1-4: local config, gateway, internet, DNS")
         run_layer_checks(cfg, reporter,
                          local_fn=lambda: detect_local_config(runner),
                          ping_fn=layer_ping, query_fn=layer_query)

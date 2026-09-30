@@ -9,6 +9,7 @@ operator usage, see [`USAGE.md`](USAGE.md).
 netcheck/
 ├── netcheck.py                     # the entire CLI (single file, stdlib only)
 ├── netcheck.ini.example            # config template (safe to commit)
+├── README.md                       # project overview + quickstart
 ├── USAGE.md                        # operator guide
 ├── MAINTAINING.md                  # this file
 ├── .github/workflows/release.yml   # tag -> release assets + SHA256SUMS

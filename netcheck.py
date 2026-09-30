@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""simple-netcheck - diagnose office internet problems and audit the switch fabric."""
+"""netcheck - diagnose office internet problems and audit the switch fabric."""
 
 from __future__ import annotations
 

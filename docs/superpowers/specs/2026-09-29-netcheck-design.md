@@ -1,4 +1,4 @@
-# simple-netcheck — Design Specification
+# netcheck — Design Specification
 
 - **Status:** Draft for review
 - **Date:** 2026-09-29
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-`simple-netcheck` is a single-file Python 3 CLI that diagnoses "no internet" problems
+`netcheck` is a single-file Python 3 CLI that diagnoses "no internet" problems
 in the office network and tells the operator what to do. It walks the connectivity
 layers, then audits the switch fabric for the conditions that most often cause
 intermittent office outages: rogue DHCP servers, loops/broadcast storms, and
@@ -391,7 +391,7 @@ a fix but no cause prints only the fix).
 ## 13. File layout
 
 ```
-simple-netcheck/
+netcheck/
 ├── netcheck.py                        # the entire CLI (single file)
 ├── netcheck.ini.example               # config template
 ├── USAGE.md                           # operator usage guide (see §15)
@@ -403,7 +403,7 @@ simple-netcheck/
 │   ├── test_hardening.py
 │   └── fixtures/                      # scrubbed capture samples
 ├── docs/superpowers/specs/
-│   └── 2026-09-29-simple-netcheck-design.md
+│   └── 2026-09-29-netcheck-design.md
 ├── idea.md
 ├── DGS-1210-28_REVC_MANUAL_4.00_EN.md
 └── DGS-1210-28-CX-4-00-008.mib

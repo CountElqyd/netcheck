@@ -1,6 +1,6 @@
-# simple-netcheck — Operator Usage Guide
+# netcheck — Operator Usage Guide
 
-`simple-netcheck` is a single-file, read-only diagnostic for the office network.
+`netcheck` is a single-file, read-only diagnostic for the office network.
 It finds *why the internet is broken*, and separately audits the D-Link switch
 fabric for the things that cause intermittent outages: rogue DHCP servers,
 loops/broadcast storms, and switch settings that drift below a hardening
@@ -13,30 +13,38 @@ baseline.
 
 ---
 
-## 0. Quickstart (3 commands)
+## 0. Quickstart
 
-The fastest path. **`uv` is the only prerequisite** — it downloads a suitable
-Python by itself, so you need no `pip`, no virtualenv, and no pre-installed
-Python.
-
-```bash
-git clone https://github.com/CountElqyd/simple-netcheck.git
-cd simple-netcheck
-uv run netcheck.py --no-fix
-```
-
-That is clone → enter → run. If you have **Python 3.10+** already installed, the
-last command can instead be `python3 netcheck.py --no-fix`.
-
-Install `uv` if you do not have it:
+**One-time: install `uv`.** `uv` fetches a suitable Python itself — no `pip`, no
+virtualenv, and no pre-installed Python.
 
 ```bash
 # Linux / macOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# macOS (alternative, via Homebrew)
+brew install uv
+
 # Windows PowerShell
 winget install --id=astral-sh.uv
 ```
+
+Confirm it is on your PATH:
+
+```bash
+uv --version
+```
+
+**Then the 3 commands:**
+
+```bash
+git clone https://github.com/CountElqyd/netcheck.git
+cd netcheck
+uv run netcheck.py --no-fix
+```
+
+That is install (once) → clone → enter → run. If you already have **Python
+3.10+**, the last command can instead be `python3 netcheck.py --no-fix`.
 
 **Enable the rogue-DHCP probe (check 6) and SNMP extras:**
 
@@ -61,7 +69,7 @@ cp netcheck.ini.example netcheck.ini       # then set snmp_community etc.
 
 ## Contents
 
-0. [Quickstart (3 commands)](#0-quickstart-3-commands)
+0. [Quickstart](#0-quickstart)
 1. [Network map and value checklist](#1-network-map-and-value-checklist)
 2. [Baseline measurement first](#2-baseline-measurement-first)
 3. [Management-laptop prerequisites](#3-management-laptop-prerequisites)
@@ -509,12 +517,12 @@ patterns.
 
 ### 6.1 Clone and run (quickstart)
 
-The fastest path — see [§0](#0-quickstart-3-commands). Three commands, no extra
+The fastest path — see [§0](#0-quickstart). Three commands, no extra
 installation beyond `uv`:
 
 ```bash
-git clone https://github.com/CountElqyd/simple-netcheck.git
-cd simple-netcheck
+git clone https://github.com/CountElqyd/netcheck.git
+cd netcheck
 uv run netcheck.py --no-fix
 ```
 
@@ -525,15 +533,15 @@ resolve **after the first tagged release** (`v0.1.0` or later).
 
 ```bash
 # Linux / macOS
-curl -sSLO https://github.com/CountElqyd/simple-netcheck/releases/latest/download/netcheck.py
-curl -sSLO https://github.com/CountElqyd/simple-netcheck/releases/latest/download/SHA256SUMS
+curl -sSLO https://github.com/CountElqyd/netcheck/releases/latest/download/netcheck.py
+curl -sSLO https://github.com/CountElqyd/netcheck/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 python3 netcheck.py
 ```
 
 ```powershell
 # Windows PowerShell
-iwr -useb https://github.com/CountElqyd/simple-netcheck/releases/latest/download/netcheck.py -OutFile netcheck.py
+iwr -useb https://github.com/CountElqyd/netcheck/releases/latest/download/netcheck.py -OutFile netcheck.py
 Get-FileHash netcheck.py -Algorithm SHA256   # compare with the published SHA256SUMS
 py netcheck.py
 ```

@@ -1,9 +1,9 @@
-# simple-netcheck — Check 7 Device Inventory Design
+# netcheck — Check 7 Device Inventory Design
 
 - **Status:** Approved in chat 2026-09-30
 - **Date:** 2026-09-30
 - **Supersedes:** check 7 ("MAC trace") in
-  `docs/superpowers/specs/2026-09-29-simple-netcheck-design.md`
+  `docs/superpowers/specs/2026-09-29-netcheck-design.md`
 - **Source request:** list every connected device MAC per switch and the port it
   is connected to, then indicate whether the device is a rogue DHCP server.
 
@@ -136,7 +136,7 @@ removed.
 
 - `USAGE.md` §7.1 catalog row for check 7, §9.3 sample output, and §7 scenario
   walkthrough (rogue DHCP) updated to describe the inventory table.
-- `docs/superpowers/specs/2026-09-29-simple-netcheck-design.md` check 7 section
+- `docs/superpowers/specs/2026-09-29-netcheck-design.md` check 7 section
   marked superseded (a pointer to this document), or updated in place.
 
 ## 8. Risks

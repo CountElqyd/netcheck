@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+ standard library (`dataclasses`, `enum`, `unittest`), optional `scapy` for check 6, no new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-simple-netcheck-design.md` (original tool design; this plan is the change design, agreed in chat on 2026-09-30).
+**Spec:** `docs/superpowers/specs/2026-09-29-netcheck-design.md` (original tool design; this plan is the change design, agreed in chat on 2026-09-30).
 
 ## Global Constraints
 

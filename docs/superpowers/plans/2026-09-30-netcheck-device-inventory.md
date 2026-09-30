@@ -580,7 +580,7 @@ git commit -m "docs: document the check 7 device inventory"
 ### Task 6: Mark the original spec's check 7 as superseded
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-09-29-simple-netcheck-design.md` (§6 check 7, ~lines 159-171; §9.3 output sample)
+- Modify: `docs/superpowers/specs/2026-09-29-netcheck-design.md` (§6 check 7, ~lines 159-171; §9.3 output sample)
 - No test changes.
 
 **Interfaces:**
@@ -600,7 +600,7 @@ At the top of §6's "**7. Trace to port**" block, prepend:
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-09-29-simple-netcheck-design.md
+git add docs/superpowers/specs/2026-09-29-netcheck-design.md
 git commit -m "docs(spec): mark the per-MAC trace superseded by the device inventory"
 ```
 

@@ -1,4 +1,4 @@
-# Maintaining simple-netcheck
+# Maintaining netcheck
 
 This is the maintainer runbook: publishing the repo and cutting releases. For
 operator usage, see [`USAGE.md`](USAGE.md).
@@ -6,7 +6,7 @@ operator usage, see [`USAGE.md`](USAGE.md).
 ## Repository layout
 
 ```
-simple-netcheck/
+netcheck/
 ├── netcheck.py                     # the entire CLI (single file, stdlib only)
 ├── netcheck.ini.example            # config template (safe to commit)
 ├── USAGE.md                        # operator guide
@@ -44,18 +44,18 @@ The example file `netcheck.ini.example` is safe to commit (no secrets).
 
 ## First-time publish to GitHub
 
-1. **Create an empty public repo** on github.com named `simple-netcheck`
+1. **Create an empty public repo** on github.com named `netcheck`
    (no README, no `.gitignore`, no license — history already exists), or with
    the GitHub CLI:
 
    ```bash
-   gh repo create CountElqyd/simple-netcheck --public --source=. --remote=origin
+   gh repo create CountElqyd/netcheck --public --source=. --remote=origin
    ```
 
 2. **Add the remote and push** (skip if `gh` already did it):
 
    ```bash
-   git remote add origin https://github.com/CountElqyd/simple-netcheck.git
+   git remote add origin https://github.com/CountElqyd/netcheck.git
    git branch -M main
    git push -u origin main
    ```

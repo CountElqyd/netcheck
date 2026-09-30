@@ -680,7 +680,7 @@ returned no rows; confirm SNMP is enabled.
 | `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default `30`; must be `> 0`) |
 | `--no-measure` | Skip rate sampling; use the static storm baseline |
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
-| `--verbose` | Show full tracebacks and raw errors on internal failures |
+| `--verbose` | Print a Python traceback when an **unexpected** internal error occurs (no effect on normal or gracefully-degraded runs) |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY) |
 | `--version` | Print the tool version and exit |
 
@@ -717,7 +717,11 @@ The tool never changes the router or any switch.
 - **Check 7 shows a switch with no rows.** The FDB walk returned nothing on that
   firmware; confirm SNMP visibility. The inventory has no Telnet fallback.
 - **Colors look wrong / garbled.** Use `--no-color` (auto-off when not a TTY).
-- **Need more detail on an internal error.** Re-run with `--verbose`.
+- **Need more detail on an internal error.** A `98. Internal error` line, or a check
+  that reports `check failed: …`, means the code hit an exception it did not expect.
+  Re-run with `--verbose` to print the Python traceback. Expected degradations (no
+  SNMP, no `scapy`, an unreachable switch) already include their reason in the
+  result detail and are unaffected by `--verbose`.
 
 ---
 

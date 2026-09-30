@@ -96,6 +96,29 @@ class TestOrchestration(unittest.TestCase):
             netcheck.run_layer_checks = orig
         self.assertTrue(any(r.id == 98 for r in reporter.results))
 
+    def test_verbose_prints_traceback_only_when_requested(self):
+        def run_once(verbose):
+            reporter = netcheck.Reporter(color=False)
+            stderr = io.StringIO()
+            orig = netcheck.run_layer_checks
+            netcheck.run_layer_checks = lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("layer boom"))
+            try:
+                with contextlib.redirect_stderr(stderr):
+                    netcheck.run_all(netcheck.Config(), reporter,
+                                     runner=lambda *a, **k: (0, "", ""),
+                                     verbose=verbose)
+            finally:
+                netcheck.run_layer_checks = orig
+            return stderr.getvalue(), reporter
+
+        loud, _ = run_once(True)
+        quiet, quiet_reporter = run_once(False)
+        self.assertIn("Traceback", loud)
+        self.assertIn("layer boom", loud)
+        self.assertNotIn("Traceback", quiet)
+        self.assertTrue(any(r.id == 98 for r in quiet_reporter.results))
+
 
 if __name__ == "__main__":
     unittest.main()

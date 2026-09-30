@@ -353,13 +353,20 @@ a fix but no cause prints only the fix).
 - Every check is wrapped so a failure produces a `WARN`/`FAIL` result, never a crash.
 - No admin/root: skip scapy/nmap paths, mark check 6 `WARN` with the reason.
 - No `scapy`: fall back to `nmap`, then to ARP-only; if none, `WARN`.
-- No SNMP response: retry; then fall back to Telnet `debug info` for check 7 and
-  mark check 9 `WARN` "SNMP unavailable".
-- Telnet format mismatch: do not guess — `WARN` "unverified format; run
-  `--verbose` to capture a sample".
+- No SNMP response: retry; then mark check 9 `WARN` "SNMP unavailable".
 - Unchanged default `admin`/`admin`: `WARN` prominently.
 - All external commands run with explicit timeouts; no shell interpolation of
   untrusted input.
+- `--verbose` prints a Python traceback only when an **unexpected** internal
+  exception is caught (a `98. Internal error` line, or a check reporting
+  `check failed: …`). It has no effect on normal runs: expected degradations
+  already carry their reason in the result detail.
+
+> **Superseded 2026-09-30:** the Telnet `debug info` fallback for check 7 has been
+> removed (see `docs/superpowers/specs/2026-09-30-netcheck-device-inventory-design.md`).
+> Consequences: "No SNMP response" no longer falls back to Telnet, and the
+> "Telnet format mismatch / run `--verbose` to capture a sample" clause no longer
+> applies — `--verbose` does not capture a Telnet sample.
 
 ## 11. Security
 

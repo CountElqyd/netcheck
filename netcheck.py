@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=_positive_float, default=3.0,
                         help="per-operation network timeout (seconds)")
     parser.add_argument("--verbose", action="store_true",
-                        help="Show full tracebacks on internal errors")
+                        help="print a traceback on an unexpected internal error")
     parser.add_argument("--no-color", action="store_true",
                         help="disable ANSI color output")
     return parser

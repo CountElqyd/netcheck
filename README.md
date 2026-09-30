@@ -59,13 +59,31 @@ need the one-time laptop and switch prerequisites in
 - **On the office LAN**, in the same Layer-2 broadcast domain as the switches and
   router (a normal DHCP lease on `192.168.1.0/24`).
 - **A secondary IPv4 address on `10.90.90.0/8`** so the switch management IPs
-  (`10.90.90.90`–`10.90.90.94`) answer.
+  (`10.90.90.90`–`10.90.90.94`) answer — see
+  [Reach the switch management subnet](#reach-the-switch-management-subnet-10909008).
 - **Admin/root** for the scapy rogue-DHCP probe (check 6); without it, check 6
   reports `WARN: not tested` and the rest still works.
 - **Read-only SNMP** enabled on each switch for the hardening audit (check 9) and
   device inventory (check 7).
 
 Full setup steps: [`USAGE.md`](USAGE.md) §3 (laptop) and §4 (switches).
+
+## Reach the switch management subnet (10.90.90.0/8)
+
+Checks 5–9 talk to the switches on `10.90.90.90`–`10.90.90.94`. Add a secondary
+address in that range to your LAN NIC; your normal `192.168.1.0/24` lease is
+unaffected.
+
+```bash
+# Linux (replace eth0; list with `ip link`)
+sudo ip addr add 10.90.90.100/8 dev eth0
+
+# macOS (replace en0; list with `networksetup -listallhardwareports`)
+sudo ifconfig en0 alias 10.90.90.100 255.0.0.0
+
+# Windows, as Administrator (replace "Ethernet"; list with `netsh interface show interface`)
+netsh interface ipv4 add address "Ethernet" 10.90.90.100 255.0.0.0
+```
 
 ## What it checks
 

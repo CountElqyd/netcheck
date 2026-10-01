@@ -21,7 +21,7 @@ class TestDocs(unittest.TestCase):
         )
         # Differs from the built-in default (""), so this only passes when the
         # example file is actually read.
-        self.assertEqual(cfg.snmp_community, "public")
+        self.assertEqual(cfg.snmp_community, "netcheck-ro")
         self.assertEqual(cfg.storm_safety_factor, 4)
         self.assertEqual(cfg.storm_floor_kbps, 10000)
 

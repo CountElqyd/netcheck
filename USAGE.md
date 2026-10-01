@@ -181,10 +181,12 @@ How the recommendation is computed (so you can sanity-check it):
 - `peak_kbps = max rate × 512 / 1000` — 512 bits assumes a conservative 64-byte
   frame, which suits broadcast/multicast.
 - Recommended threshold per port:
-  `clamp( ceil_to_64(peak_kbps × factor), floor, 0.8 × 1,000,000 ) Kbit/s`
+  `clamp( ceil_to_64(peak_kbps × factor), ceil_to_64(floor), 0.8 × 1,000,000 ) Kbit/s`
   - `factor` = `storm_safety_factor` (default `4`) — headroom over the peak.
   - `floor` = `storm_floor_kbps` (default `10000`) — never recommend below this.
   - The `0.8 × 1 GbE` cap keeps a recommendation from exceeding 80% of the link.
+  - The result is always a multiple of 64 Kbit/s, so the web-UI step count is
+    simply `N = result / 64` (§5.3).
 
 Tune the knobs if needed (INI keys `storm_safety_factor` / `storm_floor_kbps`, or
 env `NETCHECK_STORM_SAFETY_FACTOR` / `NETCHECK_STORM_FLOOR_KBPS`).
@@ -193,12 +195,12 @@ Guidance:
 
 - **30 s** is fine for a first look, but small.
 - **300 s or more, during the busiest period**, gives a representative number.
-- The tool samples once and applies the first switch's measured threshold as the
-  recommendation shown for all switches (a known simplification). If you want a
-  per-switch number, harden the switches one at a time and read each
-  recommendation.
-- `--no-measure` skips sampling and falls back to the static baseline
-  (`20 000 Kbit/s` on access ports, see §5.3). Use it when SNMP is unavailable.
+- The tool samples every switch and reports a **per-switch** recommendation.
+- Convert the recommendation to the web-UI field: it is `64Kbps × N`, so
+  **`N = round(recommended Kbit/s / 64)`** (`N` = 1–16000). See §5.3.
+- `--no-measure` skips sampling and falls back to the static baseline,
+  **N = 313** (20,032 Kbit/s) on access ports (see §5.3). Use it when SNMP is
+  unavailable.
 
 Record the recommended threshold per switch in the worksheet (Appendix A).
 
@@ -300,13 +302,25 @@ If no file exists, built-in defaults are used. Precedence is
 | `switch_pass` | *(empty)* | Unused; retained for config compatibility |
 | `storm_safety_factor` | `4` | Multiplier over measured peak |
 | `storm_floor_kbps` | `10000` | Lower bound for the recommendation |
+| `uplink_ports` | `23-27` | Ports facing another switch or the router; check 7 hides FDB entries learned here. Global ranges plus per-switch overrides — an override **replaces** the global for that switch. Spoke example: `23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25` |
+
+For the spoke layout in this guide, set the uplinks explicitly so each
+downstream switch hides only its own inter-switch port:
+
+```ini
+uplink_ports = 23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25
+```
+
+The global `23-27` is dlink1 (its cascade ports 24–27 plus the ISP uplink on
+23); each override replaces that for dlink2–dlink5, which each have a single
+uplink port.
 | `switches` | `dlink1=10.90.90.90,...` | `name=ip` list, comma-separated |
 
 Equivalent environment variables (override the file):
 `NETCHECK_GATEWAY`, `NETCHECK_DNS`, `NETCHECK_DOMAIN`,
 `NETCHECK_SNMP_COMMUNITY`, `NETCHECK_SNMP_VERSION`, `NETCHECK_SWITCH_USER`,
 `NETCHECK_SWITCH_PASS`, `NETCHECK_SWITCHES`, `NETCHECK_STORM_SAFETY_FACTOR`,
-`NETCHECK_STORM_FLOOR_KBPS`.
+`NETCHECK_STORM_FLOOR_KBPS`, `NETCHECK_UPLINK_PORTS`.
 
 Secrets are never printed and never written to the report.
 
@@ -379,6 +393,14 @@ Notes:
 - **What the tool reads:** interface counters, the bridge/Q-BRIDGE forwarding
   tables, and D-Link private objects under `1.3.6.1.4.1.171…` — the read-only
   view above covers all of them.
+- **If check 9 reports "hardening MIB not exposed by this firmware."** The switch
+  answered SNMP but returned `noSuchObject` for the hardening objects (this tool
+  reads them with their scalar `.0` instance). That happens when the community's
+  view excludes `1.3.6.1.4.1.171` (fix: step 3 above) or when the firmware does
+  not implement those objects. The audit then reports the features as
+  **unauditable** rather than guessing. Verify a single object directly:
+  `snmpget -v2c -c netcheck-ro 10.90.90.90 1.3.6.1.4.1.171.10.76.20.1.1.8.0`
+  (Safeguard Engine state; returns an integer, not `noSuchObject`).
 - **Security:** use a read-only community distinct from the admin password and
   never reuse a guessable default. Secrets live only in env/INI (§12).
 - **Reachability:** allow UDP 161 from the management laptop, which must carry
@@ -426,13 +448,25 @@ green.
 Use **From Port / To Port** to set `1`–`22`, **State = Enabled**, then **Apply**;
 repeat with the uplink/cascade ports set to **Disabled**.
 
+> **LBD and STP are mutually exclusive on the same port** on this switch — the
+> manual describes LBD as detecting loops "while Spanning Tree Protocol (STP) is
+> not enabled in the network" (`DGS-1210-28_REVC_MANUAL_4.00_EN.md` ch. 4,
+> *Jumbo Frame / Loopback Detection*). This baseline **prioritizes LBD on the
+> access ports**, so in §5.2 keep STP **port State = Disabled on 1–22** and
+> enable STP only on the uplink/cascade ports (23–27). Global RSTP stays enabled
+> so the inter-switch tree is still protected.
+
 **Why:** catches edge loops STP cannot see — both ends of a cable into two wall
 ports, or a looped unmanaged switch/hub — and shuts the offending port.
 `Recover Time = 0` matters: `60` would flap the port back into the loop every
 minute.
 
-A port reporting **loop state** is direct evidence of a live loop. The tool shows
-this as `[FAIL] 9. Hardening audit … loop port N`.
+A port reporting **loop state** is direct evidence of a live loop. The tool
+**cannot read loop state on this firmware** — the DGS-1210 exposes LBD's global
+enable/recover time and a per-port *mode* (access/uplink), but no pollable
+per-port loop status, so the audit reports LBD configuration only and relies on
+check 8's gateway loss/jitter heuristics to flag a live storm. Check the LBD
+table in the web UI (`L2 Functions > Loopback Detection`) for loop state.
 
 ### 5.2 Spanning Tree — `L2 Functions > Spanning Tree`
 
@@ -449,10 +483,18 @@ become root.
 
 **Port Settings** (`STP Port Settings`, set per port range):
 
-| Port type | Edge | P2P | Migrate | Restricted Role | Restricted TCN |
-|---|---|---|---|---|---|
-| Access (1–22) | **True** | **Auto** | No | **True** | **True** |
-| Uplink / cascade (23–27) | **False** | **True** | **Yes** | False | False |
+| Port type | State | Edge | P2P | Migrate | Restricted Role | Restricted TCN |
+|---|---|---|---|---|---|---|
+| Access (1–22) | **Disabled** | — | — | — | — | — |
+| Uplink / cascade (23–27) | **Enabled** | **False** | **True** | **Yes** | False | False |
+
+Access ports are left with **STP port State = Disabled** because LBD and STP are
+mutually exclusive on the same port and this baseline gives the access ports to
+LBD (§5.1). Global RSTP still runs, so the cascade links are protected.
+
+> **Exception:** if an access port connects to another **managed** switch or a
+> segment that needs STP, enable STP on that single port and leave LBD off
+> there instead.
 
 **Why:** a safety net for loops between managed switches and fast link-failure
 recovery. In this tree it is mostly dormant — Loopback Detection and Storm
@@ -462,12 +504,18 @@ Control are the features that actually matter here.
 
 | Field | Access ports (1–22) | Uplink / cascade (23–27) |
 |---|---|---|
-| State | **Enabled** | **Disabled**, or a high backstop (~`500000` Kbit/s) |
+| State | **Enabled** | **Disabled**, or a high backstop |
 | Storm Control Type | **Multicast & Broadcast & Unknown Unicast** | same |
-| Threshold (Kbit/s) | **the baseline-measured value** (§2.2); static fallback `20000` | `500000` backstop if enabled |
+| Threshold | **N from §2.2** = `round(recommended Kbit/s / 64)` | high backstop if enabled |
 
-Threshold is in Kbit/s in steps of 64 (range 64–1,024,000). Enter the value you
-measured, rounded to a multiple of 64.
+The web field is `Threshold (64Kbps × N)`: **N = 1–16000**, so the real threshold
+is `64 × N` Kbit/s (max 1,024,000) and must be a multiple of 64 Kbit/s
+(`DGS-1210-28_REVC_MANUAL_4.00_EN.md`, *Security > Storm Control*).
+
+- Static fallback when you don't measure: **N = 313** (20,032 Kbit/s ≈ 20 Mbit/s).
+- The tool's floor (`storm_floor_kbps = 10000`) maps to **N = 157** (10,048 Kbit/s).
+- Enter the value measured in §2.2, rounded to a multiple of 64 → N.
+- Uplink backstop, if you enable one: ~`N = 7813` (≈500,000 Kbit/s).
 
 **Why:** caps the blast radius of a storm so one bad port cannot saturate the
 uplink and take down the office. It is mitigation, not root-cause repair — pair
@@ -481,12 +529,34 @@ off). It throttles CPU-bound packet floods.
 
 ### 5.5 DHCP Server Screening — `Security > DHCP Server Screening`
 
-1. Select the **access ports (1–22)** → **Apply** (enable screening on them).
-2. **Trusted DHCP Server IP Settings**: select **IPv4**, enter `192.168.1.1`,
-   **Add** / **Apply**.
+On the DGS-1210 this page is **`DHCP Trusted Port Settings`**: a **checked** port
+is **trusted** (DHCP-server replies are allowed); the ports you leave
+**unchecked** are the ones screening blocks. There is no global on/off — the
+per-port checkboxes are the whole control. Screening is **ingress**: it drops
+DHCP-server messages that enter on an untrusted port.
 
-**Do NOT screen** the uplink (port 23) or the inter-switch ports (24–27), or the
-ISP router's DHCP replies get dropped.
+1. Check the **server-facing/uplink ports** (per switch):
+   - **dlink1: 23–27** (23 = ISP router/trusted server, 24–27 = cascade)
+   - **dlink2: 24**; **dlink3/4/5: 25**
+2. Leave the **access ports unchecked** on every switch (dlink1: 1–22;
+   dlink2: all but 24; dlink3–5: all but 25) — that is what screens rogue
+   servers.
+3. **Trusted DHCP Server IP Settings**: select **IPv4**, enter `192.168.1.1`,
+   **Add/Apply**. Do this on **every** switch.
+
+> **Never trust the access ports**: a rogue server there must be blocked.
+> The trusted-IP list is a second layer, not a rescue for a wrongly screened
+> uplink.
+
+**Confirmed read-back (dlink1):** the SNMP trusted-port table
+`1.3.6.1.4.1.171.10.76.20.1.14.2.1.1.2.<port>` holds value **2 = trusted**,
+**1 = screened**; the trusted-server table `…14.7.3.1.2` returns `192.168.1.1`.
+Run `python3 netcheck.py --verbose --no-fix` and check 9 prints
+`DHCP trusted ports …; trusted servers …`. Check 9 **warns** if any access port
+is trusted (`access ports trusted, granting rogue-server access`) or if a
+server-facing/uplink port is screened (`uplink/server port screened, blocking the
+trusted server`) — the uplink set comes from `uplink_ports` (per switch). A
+fresh switch with **all ports trusted** fails both ways — tighten it as above.
 
 **Why:** prevents a rogue DHCP server on an access port from handing out leases.
 The tool's check 6 detects rogues; screening stops the next one.
@@ -506,7 +576,9 @@ patterns.
 ### 5.8 Apply order and save
 
 1. Configure access-port settings first (LBD, Storm Control, DHCP Screening),
-   then STP.
+   then STP. Expect the §5.1/§5.2 port conflict: a port cannot be both
+   LBD-enabled and STP-enabled, so set STP **port State = Disabled** on the
+   access ports (1–22) and enable STP only on 23–27.
 2. **Save > Save Configuration** on each switch.
 3. Re-run the tool: `python3 netcheck.py --log`. Check 9 should drop the
    findings for the switches you fixed.
@@ -586,15 +658,17 @@ fixes (§10).
 | 4 | DNS | Resolves the test domain on ISP DNS and public DNS | FAIL: public works but ISP fails (**ISP DNS problem**). WARN: ISP works, public fails. FAIL: none |
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
 | 6 | Rogue DHCP | scapy broadcast discover (5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
-| 7 | Device inventory | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists all MACs with physical port, grouped by switch, always in full | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder. WARN: SNMP not configured or no switch returned an FDB |
+| 7 | Device inventory | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch, always in full. Ports in `uplink_ports` (other switches/the router) and duplicate MACs are hidden | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder. WARN: SNMP not configured or no switch returned an FDB |
 | 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter | FAIL: a port is in loop state. WARN: loss >5% or jitter >30 ms. PASS: quiet |
 | 9 | Hardening audit | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. FAIL: a port in loop state. WARN: findings or SNMP unavailable |
 | 99 | Fixes applied | Present only if you accepted a fix | — |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
 **Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 9, 8, 7.
-Check 7 always prints the full per-switch device table. Rows for MACs confirmed as
-non-gateway DHCP responders (check 6) are marked `ROGUE`.
+Check 7 always prints the full per-switch device table, but shows only end devices:
+FDB entries learned on `uplink_ports` (cascade/uplink ports) are hidden, and a MAC
+seen on more than one access port is listed once, on the least-populated port. Rows
+for MACs confirmed as non-gateway DHCP responders (check 6) are marked `ROGUE`.
 
 ### 7.2 Status meanings
 
@@ -710,10 +784,19 @@ The tool never changes the router or any switch.
   switch, the community is wrong/non-matching, a view blocks the MIBs, the
   management subnet is unreachable, or the host firewall blocks UDP 161. See
   [§4.3](#43-enable-snmp-read-only) for the full setup and verification.
+- **Check 9 says "hardening MIB not exposed by this firmware".** SNMP answered
+  but returned `noSuchObject` for every hardening object — the community's view
+  excludes `1.3.6.1.4.1.171`, or the firmware lacks those objects. The audit
+  reports the features as unauditable instead of guessing. Widen the view
+  ([§4.3](#43-enable-snmp-read-only) step 3) and confirm with
+  `snmpget -v2c -c <community> <switch> 1.3.6.1.4.1.171.10.76.20.1.1.8.0`.
 - **Check 6 WARN "not tested: ...".** The detail names the reason (`scapy not
   installed`, `raw sockets denied`, ...). Install `scapy`
-  (`uv run --with scapy netcheck.py`) and run as root/administrator, or accept
-  the WARN.
+  (`uv run --with scapy netcheck.py`) and grant raw-socket rights: run as
+  root/administrator (`sudo -E uv run --with scapy netcheck.py`), or on Linux
+  grant the interpreter the capability once
+  (`sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"`), or
+  accept the WARN. See [§3.4](#34-privileges-and-optional-tools).
 - **Check 7 shows a switch with no rows.** The FDB walk returned nothing on that
   firmware; confirm SNMP visibility. The inventory has no Telnet fallback.
 - **Colors look wrong / garbled.** Use `--no-color` (auto-off when not a TTY).
@@ -758,9 +841,10 @@ The tool never changes the router or any switch.
 | LBD off (23–27) | | | | | |
 | LBD interval / recover | 2 / 0 | 2 / 0 | 2 / 0 | 2 / 0 | 2 / 0 |
 | STP version / priority | RSTP / 4096 | RSTP / 32768 | RSTP / 32768 | RSTP / 32768 | RSTP / 32768 |
-| Storm Control threshold | | | | | |
+| STP port state (access 1–22 / uplink 23–27) | | | | | |
+| Storm Control threshold (N) | | | | | |
 | Safeguard enabled | | | | | |
-| DHCP screening (access) | | | | | |
+| DHCP screening (trusted ports / `192.168.1.1`) | | | | | |
 | DoS Prevention | | | | | |
 
 ### Post-hardening verification

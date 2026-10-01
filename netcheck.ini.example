@@ -4,10 +4,16 @@
 gateway = 192.168.1.1
 dns = 58.71.2.8,45.63.30.117
 domain = example.com
-snmp_community = public
+snmp_community = netcheck-ro
 snmp_version = 2c
 switch_user = admin
 switch_pass =
 storm_safety_factor = 4
 storm_floor_kbps = 10000
+# Ports that face another switch or the router. FDB entries learned here are
+# infrastructure, not end devices, so check 7 hides them. Syntax: global
+# ranges plus per-switch overrides (an override REPLACES the global for that
+# switch). This spoke layout is dlink1 to each downstream switch; the
+# downstream uplinks are single ports.
+uplink_ports = 23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25
 switches = dlink1=10.90.90.90,dlink2=10.90.90.91,dlink3=10.90.90.92,dlink4=10.90.90.93,dlink5=10.90.90.94

@@ -87,7 +87,7 @@ admin/root or `scapy`, check 6 reports `WARN: not tested`; run
 | 4 | DNS | Resolves a test domain on ISP DNS and public DNS |
 | 5 | Switches | Pings all five management IPs |
 | 6 | Rogue DHCP | scapy broadcast discover; flags any non-gateway responder |
-| 7 | Device inventory | SNMP FDB walk per switch; maps MACs to physical ports |
+| 7 | Device inventory | SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports are hidden) |
 | 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter |
 | 9 | Hardening audit | Read-only per-switch audit vs the hardening baseline |
 

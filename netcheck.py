@@ -163,6 +163,8 @@ class Config:
     switch_pass: str = field(default="", repr=False)
     storm_safety_factor: int = 4
     storm_floor_kbps: int = 10000
+    uplink_ports: set[int] = field(default_factory=lambda: set(range(23, 28)))
+    uplink_ports_by_switch: dict[str, set[int]] = field(default_factory=dict)
     timeout: float = 3.0
     verbose: bool = False
 
@@ -207,6 +209,45 @@ def _parse_switches(text):
     return result
 
 
+def parse_port_spec(text: str) -> set[int]:
+    ports: set[int] = set()
+    for part in text.replace(" ", "").split("+"):
+        if not part:
+            continue
+        if "-" in part:
+            lo, _, hi = part.partition("-")
+            try:
+                ports.update(range(int(lo), int(hi) + 1))
+            except ValueError:
+                continue
+        else:
+            try:
+                ports.add(int(part))
+            except ValueError:
+                continue
+    return ports
+
+
+def parse_uplink_ports(text: str) -> tuple[set[int], dict[str, set[int]]]:
+    global_ports: set[int] = set()
+    per_switch: dict[str, set[int]] = {}
+    for token in text.replace(" ", "").split(","):
+        if not token:
+            continue
+        name, sep, spec = token.partition(":")
+        if sep:
+            if name:
+                per_switch[name] = parse_port_spec(spec)
+        else:
+            global_ports |= parse_port_spec(token)
+    return global_ports, per_switch
+
+
+def uplink_ports_for(cfg, switch: str) -> set[int]:
+    return cfg.uplink_ports_by_switch.get(switch, cfg.uplink_ports)
+
+
+
 def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -> Config:
     env = os.environ if env is None else env
     cfg = Config()
@@ -232,6 +273,9 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
                 cfg.switches = _parse_switches(section["switches"])
             if section.get("dns"):
                 cfg.dns_servers = section["dns"].replace(" ", "").split(",")
+            if section.get("uplink_ports"):
+                cfg.uplink_ports, cfg.uplink_ports_by_switch = \
+                    parse_uplink_ports(section["uplink_ports"])
 
     for env_key, attr in _ENV_MAP.items():
         if env_key in env:
@@ -243,6 +287,9 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
         cfg.switches = _parse_switches(env["NETCHECK_SWITCHES"])
     if "NETCHECK_DNS" in env:
         cfg.dns_servers = env["NETCHECK_DNS"].replace(" ", "").split(",")
+    if "NETCHECK_UPLINK_PORTS" in env:
+        cfg.uplink_ports, cfg.uplink_ports_by_switch = \
+            parse_uplink_ports(env["NETCHECK_UPLINK_PORTS"])
     return cfg
 
 
@@ -947,8 +994,10 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[s
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
                             detail=f"not tested: {probe.reason}",
                             likely_cause="The rogue-DHCP probe could not run.",
-                            suggested_fix="Install scapy (uv run --with scapy netcheck.py) "
-                                          "and run as root/administrator."),
+                            suggested_fix="Install scapy (uv run --with scapy netcheck.py) and "
+                                          "grant raw-socket rights: sudo -E uv run --with scapy "
+                                          "netcheck.py, or sudo setcap cap_net_raw+ep "
+                                          "\"$(readlink -f \"$(command -v python3)\")\"."),
                 [])
     responders = probe.responders
     if not responders:
@@ -1130,6 +1179,34 @@ def collect_devices(cfg: Config, client_factory=SnmpClient) -> Devicelist:
     return result
 
 
+def access_devices(devs: Devicelist, uplink_of) -> Devicelist:
+    """Drop uplink/trunk rows and duplicates so only end devices remain.
+
+    A MAC learned on a trunk port is infrastructure traffic (another switch or
+    the router). After removing configured uplink ports, a MAC still seen more
+    than once is kept on the least-populated port (the most access-like),
+    breaking ties by switch order then port number.
+    """
+    counts = {switch: {} for switch in devs.devices}
+    for switch, macs in devs.devices.items():
+        for port in macs.values():
+            counts[switch][port] = counts[switch].get(port, 0) + 1
+    best: dict[str, tuple[tuple[int, int, int], str, int]] = {}
+    for order, (switch, macs) in enumerate(devs.devices.items()):
+        uplinks = uplink_of(switch)
+        for mac, port in macs.items():
+            if port in uplinks:
+                continue
+            rank = (counts[switch][port], order, port)
+            current = best.get(mac)
+            if current is None or rank < current[0]:
+                best[mac] = (rank, switch, port)
+    devices: dict[str, dict[str, int]] = {switch: {} for switch in devs.devices}
+    for mac, (_rank, switch, port) in best.items():
+        devices[switch][mac] = port
+    return Devicelist(devices=devices, errors=list(devs.errors))
+
+
 def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
     rows: list[tuple[str, int, str]] = []
@@ -1160,15 +1237,24 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            suggested_fix="Set the SNMP community (NETCHECK_SNMP_COMMUNITY "
                                          "or netcheck.ini).")
     devs = collect_devices(cfg, client_factory=client_factory)
-    total = sum(len(m) for m in devs.devices.values())
-    table = format_inventory(devs, rogue_macs)
+    raw_total = sum(len(m) for m in devs.devices.values())
+    filtered = access_devices(devs, lambda switch: uplink_ports_for(cfg, switch))
+    total = sum(len(m) for m in filtered.devices.values())
+    table = format_inventory(filtered, rogue_macs)
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
-    hits = [(switch, port, mac) for switch, macs in devs.devices.items()
+    hits = [(switch, port, mac) for switch, macs in filtered.devices.items()
             for mac, port in macs.items() if mac.upper() in rogue]
+    if not hits:
+        hits = [(switch, port, mac) for switch, macs in devs.devices.items()
+                for mac, port in macs.items() if mac.upper() in rogue]
+    hidden = raw_total - total
+    summary = f"{total} end devices on {len(devs.devices)} switches"
+    if hidden > 0:
+        summary += f" ({hidden} on uplink ports hidden)"
     if hits:
         where = ", ".join(f"{switch} port {port}" for switch, port, _ in hits)
         return CheckResult(7, title, Status.FAIL,
-                           detail=f"{total} devices; rogue on {where}\n{table}",
+                           detail=f"{summary}; rogue on {where}\n{table}",
                            likely_cause="A non-gateway DHCP server is attached to the fabric.",
                            suggested_fix=f"Unplug the flagged device ({where}); enable DHCP "
                                          "Server Screening with 192.168.1.1 trusted.")
@@ -1177,19 +1263,11 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            detail="inventory unavailable\n" + table,
                            likely_cause="No switch returned an FDB.",
                            suggested_fix="Confirm SNMP is enabled and reachable on each switch.")
-    detail = f"{total} devices on {len(devs.devices)} switches"
-    return CheckResult(7, title, Status.PASS, detail=detail + ("\n" + table if table else ""))
+    return CheckResult(7, title, Status.PASS, detail=summary + ("\n" + table if table else ""))
 
 
 def check_storm_hints(cfg: Config, gateway_result: PingResult,
-                      loop_ports: dict[str, list[int]], client_factory=SnmpClient
-                      ) -> CheckResult:
-    if loop_ports:
-        listing = "; ".join(f"{name} port {p}" for name, ports in loop_ports.items()
-                            for p in ports)
-        return CheckResult(8, "Loop/storm hints", Status.FAIL, detail=f"loop on {listing}",
-                           likely_cause="Loopback Detection reports a port in loop state.",
-                           suggested_fix="Unplug the looped port; see the trace/hardening checks.")
+                      client_factory=SnmpClient) -> CheckResult:
     jitter = None
     if gateway_result.max_ms is not None and gateway_result.min_ms is not None:
         jitter = gateway_result.max_ms - gateway_result.min_ms
@@ -1199,6 +1277,27 @@ def check_storm_hints(cfg: Config, gateway_result: PingResult,
                            likely_cause="Possible broadcast storm or flapping link.",
                            suggested_fix="Check LBD loop status and error counters on ports 23-27.")
     return CheckResult(8, "Loop/storm hints", Status.PASS, detail="no storm indicators")
+
+
+PRIVATE_ROOT = "1.3.6.1.4.1.171.10.76.20.1"
+
+# Scalar hardening objects on the DGS-1210 are single-instance, addressed with a
+# trailing ".0". Requesting the bare OID returns noSuchInstance (None), which is
+# how the audit used to silently fall back to "disabled" for every feature.
+_HARDENING_OIDS = {
+    "lbd_enabled":      PRIVATE_ROOT + ".17.1.0",
+    "lbd_recover_time": PRIVATE_ROOT + ".17.4.0",
+    "storm_enabled":    PRIVATE_ROOT + ".13.3.1.0",
+    "storm_type":       PRIVATE_ROOT + ".13.3.2.0",
+    "storm_threshold":  PRIVATE_ROOT + ".13.3.3.0",
+    "rstp_enabled":     PRIVATE_ROOT + ".6.1.1.0",
+    "rstp_priority":    PRIVATE_ROOT + ".6.1.3.0",
+    "safeguard_enabled": PRIVATE_ROOT + ".1.8.0",
+    "dhcp_enabled":     PRIVATE_ROOT + ".14.1.1.0",
+    "dos_enabled":      PRIVATE_ROOT + ".99.1.0",
+}
+_DHCP_TRUSTED_PORT_BASE = PRIVATE_ROOT + ".14.2.1.1.2"
+_DHCP_TRUSTED_SERVER_BASE = PRIVATE_ROOT + ".14.7.3.1.2"
 
 
 @dataclass
@@ -1211,32 +1310,58 @@ class HardeningState:
     rstp_enabled: bool = False
     rstp_priority: int = 32768
     safeguard_enabled: bool = True
-    dhcp_screen_ports: list[int] = field(default_factory=list)
+    dhcp_trusted_ports: list[int] = field(default_factory=list)
+    dhcp_trusted_servers: list[str] = field(default_factory=list)
     dos_enabled: bool = False
+    readable: bool = True
+
+
+def _ipv4_from_snmp(value) -> str | None:
+    if isinstance(value, bytes) and len(value) == 4:
+        return ".".join(str(b) for b in value)
+    return None
 
 
 def evaluate_hardening(state: HardeningState,
-                       measured: dict | None = None) -> list[str]:
+                       measured: dict | None = None,
+                       uplink_ports: set[int] | None = None,
+                       access_ports: set[int] | None = None) -> list[str]:
+    if not state.readable:
+        return ["hardening MIB not exposed by this firmware "
+                "(cannot audit LBD/STP/storm/DHCP/DoS)"]
     findings: list[str] = []
     if not state.lbd_enabled:
         findings.append("Loopback Detection: disabled (recommended: enabled, recover time 0)")
     elif state.lbd_recover_time != 0:
         findings.append(f"Loopback Detection: recover time {state.lbd_recover_time} "
                         "(recommended: 0)")
-    recommended_threshold = (measured or {}).get("threshold", 20000)
+    recommended_threshold = (measured or {}).get("threshold", STORM_FALLBACK_KBPS)
     if not state.storm_enabled:
         findings.append("Storm Control: disabled (recommended: enabled, type 3)")
     elif state.storm_type != 3:
         findings.append(f"Storm Control: type {state.storm_type} (recommended: 3)")
     elif state.storm_threshold != recommended_threshold:
-        findings.append(f"Storm Control: threshold {state.storm_threshold} "
-                        f"(recommended: {recommended_threshold})")
+        findings.append(
+            f"Storm Control: threshold {state.storm_threshold} Kbit/s "
+            f"(N={kbps_to_n(state.storm_threshold)}) (recommended: "
+            f"{recommended_threshold} Kbit/s, N={kbps_to_n(recommended_threshold)})")
     if not state.rstp_enabled:
         findings.append("RSTP: disabled (recommended: enabled)")
     if not state.safeguard_enabled:
         findings.append("Safeguard Engine: disabled (recommended: enabled)")
-    if not state.dhcp_screen_ports:
-        findings.append("DHCP Server Screening: not enabled on access ports")
+    trusted = set(state.dhcp_trusted_ports)
+    access = set(range(1, 23)) if access_ports is None else access_ports
+    uplinks = set(range(23, 28)) if uplink_ports is None else uplink_ports
+    bad_access = sorted(trusted & access)
+    bad_uplink = sorted(uplinks - trusted)
+    if bad_access:
+        findings.append("DHCP Server Screening: access ports trusted, granting "
+                        f"rogue-server access: {format_port_list(bad_access)}")
+    if bad_uplink:
+        findings.append("DHCP Server Screening: uplink/server port screened, blocking "
+                        f"the trusted server: {format_port_list(bad_uplink)}")
+    if not state.dhcp_trusted_servers:
+        findings.append("DHCP Server Screening: no trusted DHCP server IP configured")
     if not state.dos_enabled:
         findings.append("DoS Prevention: disabled (optional, recommended: enabled)")
     return findings
@@ -1244,83 +1369,110 @@ def evaluate_hardening(state: HardeningState,
 
 def read_hardening_state(client) -> HardeningState:
     state = HardeningState()
-    values = client.get([
-        "1.3.6.1.4.1.171.10.76.20.1.17.1",
-        "1.3.6.1.4.1.171.10.76.20.1.17.4",
-        "1.3.6.1.4.1.171.10.76.20.1.13.3.1",
-        "1.3.6.1.4.1.171.10.76.20.1.13.3.2",
-        "1.3.6.1.4.1.171.10.76.20.1.13.3.3",
-        "1.3.6.1.4.1.171.10.76.20.1.6.1.1",
-        "1.3.6.1.4.1.171.10.76.20.1.6.1.3",
-        "1.3.6.1.4.1.171.10.76.20.1.1.8",
-        "1.3.6.1.4.1.171.10.76.20.1.14.7.1",
-        "1.3.6.1.4.1.171.10.76.20.1.99.1",
-    ])
-    state.lbd_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.17.1") == 1
-    state.lbd_recover_time = int(values.get("1.3.6.1.4.1.171.10.76.20.1.17.4") or 0)
-    state.storm_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.1") == 1
-    state.storm_type = int(values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.2") or 1)
-    state.storm_threshold = int(values.get("1.3.6.1.4.1.171.10.76.20.1.13.3.3") or 0)
-    state.rstp_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.6.1.1") == 1
-    state.rstp_priority = int(values.get("1.3.6.1.4.1.171.10.76.20.1.6.1.3") or 32768)
-    state.safeguard_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.1.8") == 1
-    ports = values.get("1.3.6.1.4.1.171.10.76.20.1.14.7.1")
-    state.dhcp_screen_ports = decode_port_list(ports) if isinstance(ports, bytes) else []
-    state.dos_enabled = values.get("1.3.6.1.4.1.171.10.76.20.1.99.1") == 1
+    values: dict[str, object] = {}
+    for key, oid in _HARDENING_OIDS.items():
+        try:
+            values[key] = client.get([oid]).get(oid)
+        except SnmpError:
+            values[key] = None
+    returned = sum(1 for value in values.values() if value is not None)
+    if returned == 0:
+        state.readable = False
+        return state
+    state.lbd_enabled = values.get("lbd_enabled") == 1
+    state.lbd_recover_time = int(values.get("lbd_recover_time") or 0)
+    state.storm_enabled = values.get("storm_enabled") == 1
+    state.storm_type = int(values.get("storm_type") or 1)
+    state.storm_threshold = int(values.get("storm_threshold") or 0)
+    state.rstp_enabled = values.get("rstp_enabled") == 1
+    state.rstp_priority = int(values.get("rstp_priority") or 32768)
+    state.safeguard_enabled = values.get("safeguard_enabled") == 1
+    state.dos_enabled = values.get("dos_enabled") == 1
+    try:
+        for oid, value in client.walk(_DHCP_TRUSTED_PORT_BASE):
+            if value == 2:
+                state.dhcp_trusted_ports.append(int(oid.rsplit(".", 1)[1]))
+        for _oid, value in client.walk(_DHCP_TRUSTED_SERVER_BASE):
+            ip = _ipv4_from_snmp(value)
+            if ip:
+                state.dhcp_trusted_servers.append(ip)
+    except SnmpError:
+        pass
     return state
 
 
-def read_loop_ports(client) -> list[int]:
-    loop: list[int] = []
-    for oid, value in client.walk("1.3.6.1.4.1.171.10.76.20.1.17.5.1.3"):
-        if value == 2:
-            loop.append(int(oid.rsplit(".", 1)[1]))
-    return loop
-
-
-def check_hardening(cfg: Config, measured: dict | None = None,
-                    client_factory=SnmpClient
-                    ) -> tuple[CheckResult, dict[str, list[int]]]:
+def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
+                    client_factory=SnmpClient) -> CheckResult:
     if not cfg.snmp_community:
-        return (CheckResult(9, "Hardening audit", Status.WARN,
-                            detail="SNMP community not set; cannot audit switches"),
-                {})
+        return CheckResult(9, "Hardening audit", Status.WARN,
+                           detail="SNMP community not set; cannot audit switches")
+    measured = measured or {}
     findings: list[str] = []
-    loop_ports: dict[str, list[int]] = {}
     for name, host in cfg.switches.items():
         try:
             client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
             state = read_hardening_state(client)
-            for finding in evaluate_hardening(state, measured):
+            if not state.readable:
+                findings.append(f"{name}: hardening MIB not exposed by this firmware "
+                                "(cannot audit LBD/STP/storm/DHCP/DoS)")
+                continue
+            uplinks = uplink_ports_for(cfg, name)
+            for finding in evaluate_hardening(state, measured.get(name),
+                                              uplink_ports=uplinks):
                 findings.append(f"{name}: {finding}")
-            ports = read_loop_ports(client)
-            if ports:
-                loop_ports[name] = ports
+            _diag(cfg, f"{name}: DHCP trusted ports "
+                       f"{format_port_list(state.dhcp_trusted_ports)}; "
+                       f"trusted servers {state.dhcp_trusted_servers or 'none'}")
         except (SnmpError, ValueError) as exc:
             _diag_exc(cfg)
             findings.append(f"{name}: SNMP unavailable ({exc})")
-    if not findings and not loop_ports:
+    if not findings:
         return CheckResult(9, "Hardening audit", Status.PASS,
-                           detail="all switches meet the baseline"), loop_ports
-    loop_detail = "; ".join(f"{name} loop port {p}"
-                            for name, ports in loop_ports.items() for p in ports)
-    detail = "; ".join(part for part in (loop_detail, "; ".join(findings[:6])) if part)
-    if loop_ports:
-        return CheckResult(9, "Hardening audit", Status.FAIL, detail=detail,
-                           likely_cause="A switch port is in loop state.",
-                           suggested_fix="Unplug the looped port, then re-run."), loop_ports
-    return CheckResult(9, "Hardening audit", Status.WARN, detail=detail,
+                           detail="all switches meet the baseline")
+    return CheckResult(9, "Hardening audit", Status.WARN, detail="; ".join(findings),
                        suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
-                                     "RSTP, DHCP Server Screening)."), loop_ports
+                                     "RSTP, DHCP Server Screening). LBD and RSTP are "
+                                     "mutually exclusive per port on DGS-1210: keep RSTP on "
+                                     "the cascade ports, LBD on the access ports.")
 
 
 def ceil_to_64(n: float) -> int:
     return int(-(-n // 64) * 64)
 
 
+def kbps_to_n(kbps: float) -> int:
+    """Convert a Kbit/s threshold to the switch's web-UI step count N.
+
+    The DGS-1210 storm-control field is ``Threshold (64Kbps * N)`` with
+    ``N = 1..16000`` (DGS-1210-28 manual, Security > Storm Control); the real
+    threshold is ``64 * N`` Kbit/s and must be a multiple of 64.
+    """
+    n = int(round(kbps / 64.0))
+    return max(1, min(16000, n))
+
+
+def format_port_list(ports: list[int]) -> str:
+    if not ports:
+        return "none"
+    ordered = sorted(set(ports))
+    ranges: list[str] = []
+    start = prev = ordered[0]
+    for port in ordered[1:]:
+        if port == prev + 1:
+            prev = port
+            continue
+        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = port
+    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+STORM_FALLBACK_KBPS = 313 * 64
+
+
 def compute_threshold(peak_kbps: float, link_kbps: int, factor: int = 4,
                       floor: int = 10000) -> int:
-    target = max(ceil_to_64(peak_kbps * factor), floor)
+    target = max(ceil_to_64(peak_kbps * factor), ceil_to_64(floor))
     return min(target, int(0.8 * link_kbps))
 
 
@@ -1469,21 +1621,16 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(6, "Rogue DHCP", _rogue)
 
-        loop_ports: dict[str, list[int]] = {}
-
         def _hardening() -> None:
             measured = ({} if no_measure
                         else measure_storm_threshold(cfg, sample_seconds=sample))
-            per_switch_measured = next(iter(measured.values()), None)
-            result, ports = check_hardening(cfg, measured=per_switch_measured)
-            reporter.add(result)
-            loop_ports.update(ports)
+            reporter.add(check_hardening(cfg, measured=measured))
 
         _run_check(9, "Hardening audit", _hardening)
 
         def _storm() -> None:
             gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
-            reporter.add(check_storm_hints(cfg, gateway_ping, loop_ports))
+            reporter.add(check_storm_hints(cfg, gateway_ping))
 
         _run_check(8, "Loop/storm hints", _storm)
 

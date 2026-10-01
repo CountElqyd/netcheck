@@ -7,9 +7,13 @@ from netcheck import (
     Config,
     Devicelist,
     SnmpError,
+    access_devices,
     collect_devices,
     mac_from_oid_suffix,
     mac_to_oid_suffix,
+    parse_port_spec,
+    parse_uplink_ports,
+    uplink_ports_for,
 )
 
 
@@ -123,6 +127,58 @@ class TestCollectDevices(unittest.TestCase):
         self.assertEqual(result.devices, {})
 
 
+class TestUplinkPortParsing(unittest.TestCase):
+    def test_single_port_and_range(self):
+        self.assertEqual(parse_port_spec("24"), {24})
+        self.assertEqual(parse_port_spec("23-27"), {23, 24, 25, 26, 27})
+
+    def test_plus_joins_multiple_specs(self):
+        self.assertEqual(parse_port_spec("24-25+27"), {24, 25, 27})
+
+    def test_invalid_parts_ignored(self):
+        self.assertEqual(parse_port_spec("x+24"), {24})
+        self.assertEqual(parse_port_spec("bad"), set())
+
+    def test_global_and_per_switch(self):
+        global_ports, per_switch = parse_uplink_ports("23-27,dlink2:24-25")
+        self.assertEqual(global_ports, {23, 24, 25, 26, 27})
+        self.assertEqual(per_switch, {"dlink2": {24, 25}})
+
+    def test_uplink_ports_for_falls_back_to_global(self):
+        cfg = Config(uplink_ports={23, 24}, uplink_ports_by_switch={"dlink2": {24}})
+        self.assertEqual(uplink_ports_for(cfg, "dlink2"), {24})
+        self.assertEqual(uplink_ports_for(cfg, "dlink1"), {23, 24})
+
+
+class TestAccessDevices(unittest.TestCase):
+    def test_drops_uplink_ports(self):
+        devs = Devicelist(devices={"dlink1": {MAC_A: 5, MAC_B: 25}})
+        result = access_devices(devs, lambda switch: {25})
+        self.assertEqual(result.devices["dlink1"], {MAC_A: 5})
+
+    def test_per_switch_uplinks(self):
+        devs = Devicelist(devices={"dlink1": {MAC_A: 5}, "dlink2": {MAC_B: 8}})
+        result = access_devices(
+            devs, lambda switch: {5} if switch == "dlink1" else set())
+        self.assertEqual(result.devices["dlink1"], {})
+        self.assertEqual(result.devices["dlink2"], {MAC_B: 8})
+
+    def test_dedupes_keeping_least_populated_port(self):
+        mac_e = "00:1E:58:AA:BB:EE"
+        devs = Devicelist(devices={
+            "dlink1": {MAC_A: 24, mac_e: 24},
+            "dlink2": {MAC_A: 10},
+        })
+        result = access_devices(devs, lambda switch: set())
+        self.assertEqual(result.devices["dlink1"], {mac_e: 24})
+        self.assertEqual(result.devices["dlink2"], {MAC_A: 10})
+
+    def test_errors_preserved(self):
+        devs = Devicelist(devices={"dlink1": {}}, errors=["dlink1: SNMP unavailable (x)"])
+        result = access_devices(devs, lambda switch: set())
+        self.assertEqual(result.errors, ["dlink1: SNMP unavailable (x)"])
+
+
 from netcheck import (
     CheckResult,
     Status,
@@ -202,6 +258,21 @@ class TestCheckDeviceInventory(unittest.TestCase):
         cfg = Config(switches={"dlink1": "10.90.90.91"}, snmp_community="public")
         result = check_device_inventory(cfg, [], client_factory=ExplodingClient)
         self.assertIs(result.status, Status.WARN)
+
+    def test_uplink_port_entries_hidden(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public",
+                     uplink_ports={5})
+        result = check_device_inventory(cfg, [], client_factory=FakeClient)
+        self.assertIs(result.status, Status.PASS)
+        self.assertNotIn(MAC_A, result.detail)
+        self.assertIn("1 on uplink ports hidden", result.detail)
+
+    def test_rogue_seen_only_on_uplink_still_flagged(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public",
+                     uplink_ports={5})
+        result = check_device_inventory(cfg, [MAC_A], client_factory=FakeClient)
+        self.assertIs(result.status, Status.FAIL)
+        self.assertIn("dlink1 port 5", result.detail)
 
 
 if __name__ == "__main__":

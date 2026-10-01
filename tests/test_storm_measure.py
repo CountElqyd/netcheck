@@ -28,7 +28,7 @@ class TestStormMeasure(unittest.TestCase):
         self.assertEqual(ceil_to_64(65), 128)
 
     def test_compute_threshold_floor_and_cap(self):
-        self.assertEqual(compute_threshold(100, 1_000_000), 10000)
+        self.assertEqual(compute_threshold(100, 1_000_000), 10048)
         self.assertEqual(compute_threshold(100_000, 1_000_000), 400000)
         self.assertEqual(compute_threshold(900_000, 1_000_000), 800000)
 

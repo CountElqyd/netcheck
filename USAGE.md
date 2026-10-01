@@ -640,8 +640,11 @@ cp netcheck.ini.example netcheck.ini     # then set snmp_community etc.
 python3 netcheck.py                      # or: uv run netcheck.py
 ```
 
-Expect one `[PASS]`/`[WARN]`/`[FAIL]` line per check. Use `--log` to keep a
-timestamped report alongside the console output.
+Expect one `[PASS]`/`[WARN]`/`[FAIL]` line per check, with the detail wrapped on
+the following indented lines and any `Likely cause:` / `Suggested fix:` beneath.
+Long output wraps to the terminal width; set `COLUMNS` to control it. Use
+`--log` to keep a timestamped report, `--quiet` for just the summary line, or
+`--json` to pipe a structured report into other tools.
 
 ---
 
@@ -759,6 +762,8 @@ returned no rows; confirm SNMP is enabled.
 | `--no-measure` | Skip rate sampling; use the static storm baseline |
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
 | `--verbose` | Print diagnostics to stderr: a config/platform preamble, per-check markers, and a Python traceback for any error — including handled degradations (SNMP, `scapy`, storm sampling) |
+| `--quiet` | Print only the one-line summary (hide per-check output) |
+| `--json` | Emit a machine-readable JSON report (`summary` + `checks`) instead of the human report |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY) |
 | `--version` | Print the tool version and exit |
 

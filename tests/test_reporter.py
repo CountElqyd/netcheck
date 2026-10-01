@@ -38,25 +38,26 @@ class TestReporter(unittest.TestCase):
         self.assertIn("1 FAIL", text)
         self.assertIn("exit code 2", text)
 
-    def test_render_aligns_detail_column(self):
+    def test_render_detail_on_its_own_indented_line(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.PASS, detail="one"))
+        lines = r.render().splitlines()
+        self.assertTrue(lines[0].startswith("[PASS]  1. A"))
+        self.assertEqual(lines[1], "      one")
+
+    def test_render_title_no_trailing_space(self):
         r = Reporter(color=False)
         r.add(CheckResult(1, "A", Status.PASS, detail="one"))
         r.add(CheckResult(2, "Long title here", Status.PASS, detail="two"))
-        lines = [ln for ln in r.render().splitlines() if ln.startswith("[PASS]")]
-        self.assertEqual(lines[0].index(" - "), lines[1].index(" - "))
+        heads = [ln for ln in r.render().splitlines() if ln.startswith("[PASS]")]
+        self.assertEqual(heads[0], "[PASS]  1. A")
+        self.assertEqual(heads[1], "[PASS]  2. Long title here")
 
-    def test_render_aligns_detail_column_with_long_title(self):
-        r = Reporter(color=False)
-        r.add(CheckResult(1, "A", Status.PASS, detail="one"))
-        r.add(CheckResult(6, "Trace aa:bb:cc:dd:ee:ff", Status.PASS, detail="two"))
-        lines = [ln for ln in r.render().splitlines() if ln.startswith("[PASS]")]
-        self.assertEqual(lines[0].index(" - "), lines[1].index(" - "))
-
-    def test_render_placeholders_missing_cause(self):
+    def test_render_omits_placeholder_lines(self):
         r = Reporter(color=False)
         r.add(CheckResult(9, "Hardening audit", Status.WARN, suggested_fix="do x"))
         text = r.render()
-        self.assertIn("Likely cause: -", text)
+        self.assertNotIn("Likely cause: -", text)
         self.assertIn("Suggested fix: do x", text)
 
     def test_render_omits_cause_block_when_absent(self):
@@ -85,6 +86,34 @@ class TestReporter(unittest.TestCase):
         r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
         self.assertNotIn("\033", r.render())
         self.assertIn("\033", r.render(color=True))
+
+    def test_quiet_only_summary(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        r.add(CheckResult(2, "Gateway", Status.WARN, detail="loss"))
+        text = r.render(quiet=True)
+        self.assertNotIn("Local config", text)
+        self.assertNotIn("Legend:", text)
+        self.assertIn("Summary:", text)
+
+    def test_to_dict_schema(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL, detail="x",
+                          likely_cause="c", suggested_fix="f"))
+        d = r.to_dict()
+        self.assertEqual(d["exit_code"], 2)
+        self.assertEqual(d["summary"]["FAIL"], 1)
+        self.assertEqual(len(d["checks"]), 1)
+        self.assertEqual(d["checks"][0]["status"], "FAIL")
+        self.assertEqual(d["checks"][0]["title"], "Rogue DHCP")
+        self.assertEqual(d["checks"][0]["suggested_fix"], "f")
+
+    def test_long_detail_wraps(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(7, "Device inventory", Status.PASS, detail="word " * 80))
+        lines = r.render().splitlines()
+        self.assertTrue(all(len(ln) <= 100 for ln in lines))
+        self.assertGreater(len([ln for ln in lines if ln.startswith("      ")]), 1)
 
 
 if __name__ == "__main__":

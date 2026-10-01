@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 import sys
+import textwrap
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 import enum
@@ -52,30 +55,69 @@ class Reporter:
             return 1
         return 0
 
-    def render(self, color: bool | None = None) -> str:
+    def counts(self) -> dict:
+        return {s: sum(1 for r in self.results if r.status is s) for s in Status}
+
+    def to_dict(self) -> dict:
+        counts = self.counts()
+        return {
+            "version": __version__,
+            "exit_code": self.exit_code(),
+            "summary": {s.value: counts[s] for s in Status},
+            "checks": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "status": r.status.value,
+                    "detail": r.detail,
+                    "likely_cause": r.likely_cause,
+                    "suggested_fix": r.suggested_fix,
+                }
+                for r in self.results
+            ],
+        }
+
+    def _render_check(self, r: CheckResult, head: str, title_width: int,
+                      width: int, use_color: bool) -> list[str]:
+        plain_tag = f"[{r.status.value}]"
+        tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}" if use_color else plain_tag
+        lines = [f"{tag} {head:<{title_width}}".rstrip()]
+        if r.detail:
+            lines.extend(textwrap.wrap(r.detail, width=width,
+                                       initial_indent="      ",
+                                       subsequent_indent="      ") or [""])
+        for label, value in (("Likely cause", r.likely_cause),
+                             ("Suggested fix", r.suggested_fix)):
+            if value:
+                indent = " " * (5 + len(label) + 2)
+                lines.extend(textwrap.wrap(
+                    value, width=width,
+                    initial_indent=f"    {label}: ",
+                    subsequent_indent=indent))
+        return lines
+
+    def render(self, color: bool | None = None, quiet: bool = False) -> str:
         use_color = self.color if color is None else color
-        lines: list[str] = []
+        try:
+            width = shutil.get_terminal_size((88, 24)).columns
+        except OSError:
+            width = 88
+        width = max(width, 40)
         heads = [f"{r.id:>2}. {r.title}" for r in self.results]
         title_width = max((len(h) for h in heads), default=0)
-        for head, r in zip(heads, self.results):
-            plain_tag = f"[{r.status.value}]"
-            tag = plain_tag
-            if use_color:
-                tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}"
-            line = f"{tag} {head:<{title_width}}"
-            if r.detail:
-                line += f" - {r.detail}"
-            lines.append(line)
-            if r.likely_cause or r.suggested_fix:
-                lines.append("    Likely cause: " + (r.likely_cause or "-"))
-                lines.append("    Suggested fix: " + (r.suggested_fix or "-"))
+        lines: list[str] = []
+        if not quiet:
+            for head, r in zip(heads, self.results):
+                lines.extend(self._render_check(r, head, title_width, width, use_color))
         if self.results:
-            counts = {s: sum(1 for r in self.results if r.status is s) for s in Status}
-            lines.append("")
+            counts = self.counts()
+            if lines:
+                lines.append("")
             lines.append(f"Summary: {counts[Status.PASS]} PASS · {counts[Status.WARN]} WARN · "
                          f"{counts[Status.FAIL]} FAIL  (exit code {self.exit_code()})")
-            lines.append("Legend:  PASS healthy  ·  WARN needs attention  ·  "
-                         "FAIL broken — fix FAILs first")
+            if not quiet:
+                lines.append("Legend:  PASS healthy  ·  WARN needs attention  ·  "
+                             "FAIL broken — fix FAILs first")
         return "\n".join(lines)
 
 
@@ -106,6 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print diagnostics (config summary, error tracebacks)")
     parser.add_argument("--no-color", action="store_true",
                         help="disable ANSI color output")
+    parser.add_argument("--quiet", action="store_true",
+                        help="print only the summary line")
+    parser.add_argument("--json", action="store_true",
+                        help="emit machine-readable JSON instead of the report")
     return parser
 
 
@@ -134,8 +180,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
-    text = reporter.render()
-    print(text)
+    if args.json:
+        print(json.dumps(reporter.to_dict(), indent=2, sort_keys=False))
+    else:
+        print(reporter.render(quiet=args.quiet))
     if args.log:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         with open(_log_path(stamp), "w") as fh:

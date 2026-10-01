@@ -1314,6 +1314,7 @@ class HardeningState:
     dhcp_trusted_servers: list[str] = field(default_factory=list)
     dos_enabled: bool = False
     readable: bool = True
+    unknown: frozenset = frozenset()
 
 
 def _ipv4_from_snmp(value) -> str | None:
@@ -1330,13 +1331,18 @@ def evaluate_hardening(state: HardeningState,
         return ["hardening MIB not exposed by this firmware "
                 "(cannot audit LBD/STP/storm/DHCP/DoS)"]
     findings: list[str] = []
-    if not state.lbd_enabled:
+    unknown = state.unknown
+    if "lbd_enabled" in unknown:
+        findings.append("Loopback Detection: not readable (SNMP timeout)")
+    elif not state.lbd_enabled:
         findings.append("Loopback Detection: disabled (recommended: enabled, recover time 0)")
     elif state.lbd_recover_time != 0:
         findings.append(f"Loopback Detection: recover time {state.lbd_recover_time} "
                         "(recommended: 0)")
     recommended_threshold = (measured or {}).get("threshold", STORM_FALLBACK_KBPS)
-    if not state.storm_enabled:
+    if "storm_enabled" in unknown:
+        findings.append("Storm Control: not readable (SNMP timeout)")
+    elif not state.storm_enabled:
         findings.append("Storm Control: disabled (recommended: enabled, type 3)")
     elif state.storm_type != 3:
         findings.append(f"Storm Control: type {state.storm_type} (recommended: 3)")
@@ -1345,9 +1351,13 @@ def evaluate_hardening(state: HardeningState,
             f"Storm Control: threshold {state.storm_threshold} Kbit/s "
             f"(N={kbps_to_n(state.storm_threshold)}) (recommended: "
             f"{recommended_threshold} Kbit/s, N={kbps_to_n(recommended_threshold)})")
-    if not state.rstp_enabled:
+    if "rstp_enabled" in unknown:
+        findings.append("RSTP: not readable (SNMP timeout)")
+    elif not state.rstp_enabled:
         findings.append("RSTP: disabled (recommended: enabled)")
-    if not state.safeguard_enabled:
+    if "safeguard_enabled" in unknown:
+        findings.append("Safeguard Engine: not readable (SNMP timeout)")
+    elif not state.safeguard_enabled:
         findings.append("Safeguard Engine: disabled (recommended: enabled)")
     trusted = set(state.dhcp_trusted_ports)
     access = set(range(1, 23)) if access_ports is None else access_ports
@@ -1370,15 +1380,22 @@ def evaluate_hardening(state: HardeningState,
 def read_hardening_state(client) -> HardeningState:
     state = HardeningState()
     values: dict[str, object] = {}
+    unknown: set[str] = set()
     for key, oid in _HARDENING_OIDS.items():
         try:
             values[key] = client.get([oid]).get(oid)
         except SnmpError:
             values[key] = None
+            unknown.add(key)
     returned = sum(1 for value in values.values() if value is not None)
     if returned == 0:
+        # Nothing came back: the switch either did not answer (every probe
+        # raised) or the objects are not implemented (every probe returned
+        # noSuchObject). Either way the features are unauditable.
         state.readable = False
+        state.unknown = frozenset(unknown)
         return state
+    state.unknown = frozenset(unknown)
     state.lbd_enabled = values.get("lbd_enabled") == 1
     state.lbd_recover_time = int(values.get("lbd_recover_time") or 0)
     state.storm_enabled = values.get("storm_enabled") == 1

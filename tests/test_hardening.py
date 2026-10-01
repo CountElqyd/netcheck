@@ -3,6 +3,7 @@ import unittest
 from netcheck import (
     Config,
     HardeningState,
+    SnmpError,
     Status,
     STORM_FALLBACK_KBPS,
     check_hardening,
@@ -104,6 +105,16 @@ class UnknownOidClient(CompliantClient):
         return []
 
 
+class TimeoutClient(CompliantClient):
+    """Simulates an SNMP agent that times out on the scalar GETs."""
+
+    def get(self, oids):
+        raise SnmpError("no response from host: timed out")
+
+    def walk(self, base_oid):
+        return []
+
+
 class PerSwitchThresholdClient(CompliantClient):
     def __init__(self, host, community, **kw):
         self.host = host
@@ -186,6 +197,16 @@ class TestReadHardeningState(unittest.TestCase):
     def test_all_none_marks_unreadable(self):
         state = read_hardening_state(UnknownOidClient("h", "c"))
         self.assertFalse(state.readable)
+
+    def test_timeout_marks_unreachable_not_unreadable(self):
+        state = read_hardening_state(TimeoutClient("h", "c"))
+        self.assertFalse(state.readable)
+
+    def test_partial_timeout_reports_not_readable(self):
+        from dataclasses import replace
+        state = replace(BASELINE_GOOD, unknown=frozenset({"safeguard_enabled"}))
+        text = "\n".join(evaluate_hardening(state))
+        self.assertIn("Safeguard Engine: not readable", text)
 
     def test_reads_dhcp_trusted_ports_and_servers(self):
         class DhcpClient(CompliantClient):

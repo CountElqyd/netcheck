@@ -1296,7 +1296,6 @@ _HARDENING_OIDS = {
     "dhcp_enabled":     PRIVATE_ROOT + ".14.1.1.0",
     "dos_enabled":      PRIVATE_ROOT + ".99.1.0",
 }
-_DHCP_TRUSTED_PORT_BASE = PRIVATE_ROOT + ".14.2.1.1.2"
 _DHCP_TRUSTED_SERVER_BASE = PRIVATE_ROOT + ".14.7.3.1.2"
 
 
@@ -1310,7 +1309,7 @@ class HardeningState:
     rstp_enabled: bool = False
     rstp_priority: int = 32768
     safeguard_enabled: bool = True
-    dhcp_trusted_ports: list[int] = field(default_factory=list)
+    dhcp_enabled: bool = False
     dhcp_trusted_servers: list[str] = field(default_factory=list)
     dos_enabled: bool = False
     readable: bool = True
@@ -1324,9 +1323,7 @@ def _ipv4_from_snmp(value) -> str | None:
 
 
 def evaluate_hardening(state: HardeningState,
-                       measured: dict | None = None,
-                       uplink_ports: set[int] | None = None,
-                       access_ports: set[int] | None = None) -> list[str]:
+                       measured: dict | None = None) -> list[str]:
     if not state.readable:
         return ["hardening MIB not exposed by this firmware "
                 "(cannot audit LBD/STP/storm/DHCP/DoS)"]
@@ -1359,17 +1356,12 @@ def evaluate_hardening(state: HardeningState,
         findings.append("Safeguard Engine: not readable (SNMP timeout)")
     elif not state.safeguard_enabled:
         findings.append("Safeguard Engine: disabled (recommended: enabled)")
-    trusted = set(state.dhcp_trusted_ports)
-    access = set(range(1, 23)) if access_ports is None else access_ports
-    uplinks = set(range(23, 28)) if uplink_ports is None else uplink_ports
-    bad_access = sorted(trusted & access)
-    bad_uplink = sorted(uplinks - trusted)
-    if bad_access:
-        findings.append("DHCP Server Screening: access ports trusted, granting "
-                        f"rogue-server access: {format_port_list(bad_access)}")
-    if bad_uplink:
-        findings.append("DHCP Server Screening: uplink/server port screened, blocking "
-                        f"the trusted server: {format_port_list(bad_uplink)}")
+    if "dhcp_enabled" in unknown:
+        findings.append("DHCP Server Screening: not readable (SNMP timeout)")
+    elif not state.dhcp_enabled:
+        findings.append("DHCP Server Screening: disabled (recommended: enabled). "
+                        "Per-port trust is not exposed over SNMP on this firmware; "
+                        "verify trusted ports in the web UI and use check 6 for rogues")
     if not state.dhcp_trusted_servers:
         findings.append("DHCP Server Screening: no trusted DHCP server IP configured")
     if not state.dos_enabled:
@@ -1405,10 +1397,8 @@ def read_hardening_state(client) -> HardeningState:
     state.rstp_priority = int(values.get("rstp_priority") or 32768)
     state.safeguard_enabled = values.get("safeguard_enabled") == 1
     state.dos_enabled = values.get("dos_enabled") == 1
+    state.dhcp_enabled = values.get("dhcp_enabled") not in (None, 0)
     try:
-        for oid, value in client.walk(_DHCP_TRUSTED_PORT_BASE):
-            if value == 2:
-                state.dhcp_trusted_ports.append(int(oid.rsplit(".", 1)[1]))
         for _oid, value in client.walk(_DHCP_TRUSTED_SERVER_BASE):
             ip = _ipv4_from_snmp(value)
             if ip:
@@ -1433,12 +1423,9 @@ def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
                 findings.append(f"{name}: hardening MIB not exposed by this firmware "
                                 "(cannot audit LBD/STP/storm/DHCP/DoS)")
                 continue
-            uplinks = uplink_ports_for(cfg, name)
-            for finding in evaluate_hardening(state, measured.get(name),
-                                              uplink_ports=uplinks):
+            for finding in evaluate_hardening(state, measured.get(name)):
                 findings.append(f"{name}: {finding}")
-            _diag(cfg, f"{name}: DHCP trusted ports "
-                       f"{format_port_list(state.dhcp_trusted_ports)}; "
+            _diag(cfg, f"{name}: DHCP screening enabled={state.dhcp_enabled}; "
                        f"trusted servers {state.dhcp_trusted_servers or 'none'}")
         except (SnmpError, ValueError) as exc:
             _diag_exc(cfg)

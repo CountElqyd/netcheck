@@ -16,12 +16,12 @@ from netcheck import (
 BASELINE_GOOD = HardeningState(
     lbd_enabled=True, lbd_recover_time=0, storm_enabled=True, storm_type=3,
     storm_threshold=STORM_FALLBACK_KBPS, rstp_enabled=True, rstp_priority=4096,
-    safeguard_enabled=True, dhcp_trusted_ports=[23, 24, 25, 26, 27],
+    safeguard_enabled=True, dhcp_enabled=True,
     dhcp_trusted_servers=["192.168.1.1"], dos_enabled=True)
 BASELINE_BAD = HardeningState(
     lbd_enabled=False, lbd_recover_time=60, storm_enabled=False, storm_type=1,
     storm_threshold=0, rstp_enabled=False, rstp_priority=32768,
-    safeguard_enabled=False, dhcp_trusted_ports=[], dhcp_trusted_servers=[],
+    safeguard_enabled=False, dhcp_enabled=False, dhcp_trusted_servers=[],
     dos_enabled=False)
 
 
@@ -45,19 +45,11 @@ class TestHardening(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("not exposed", findings[0])
 
-    def test_trusted_access_port_is_flagged(self):
+    def test_dhcp_disabled_flagged(self):
         from dataclasses import replace
-        state = replace(BASELINE_GOOD, dhcp_trusted_ports=[1, 2, 23, 24, 25, 26, 27])
+        state = replace(BASELINE_GOOD, dhcp_enabled=False)
         text = "\n".join(evaluate_hardening(state))
-        self.assertIn("access ports trusted", text)
-        self.assertIn("1-2", text)
-
-    def test_screened_uplink_is_flagged(self):
-        from dataclasses import replace
-        state = replace(BASELINE_GOOD, dhcp_trusted_ports=[23, 24, 25])  # 26, 27 missing
-        text = "\n".join(evaluate_hardening(state))
-        self.assertIn("uplink/server port screened", text)
-        self.assertIn("26-27", text)
+        self.assertIn("DHCP Server Screening: disabled", text)
 
     def test_no_trusted_server_flagged(self):
         from dataclasses import replace
@@ -88,8 +80,6 @@ class CompliantClient:
         return {oid: COMPLIANT_VALUES.get(oid) for oid in oids}
 
     def walk(self, base_oid):
-        if base_oid.endswith(".14.2.1.1.2"):
-            return [(f"{base_oid}.{p}", 2) for p in (23, 24, 25, 26, 27)]
         if base_oid.endswith(".14.7.3.1.2"):
             return [(f"{base_oid}.1", b"\xc0\xa8\x01\x01")]
         return []
@@ -208,17 +198,9 @@ class TestReadHardeningState(unittest.TestCase):
         text = "\n".join(evaluate_hardening(state))
         self.assertIn("Safeguard Engine: not readable", text)
 
-    def test_reads_dhcp_trusted_ports_and_servers(self):
-        class DhcpClient(CompliantClient):
-            def walk(self, base_oid):
-                if base_oid.endswith(".14.2.1.1.2"):
-                    return [(f"{base_oid}.23", 2), (f"{base_oid}.1", 1)]
-                if base_oid.endswith(".14.7.3.1.2"):
-                    return [(f"{base_oid}.1", b"\xc0\xa8\x01\x01")]
-                return []
-
-        state = read_hardening_state(DhcpClient("h", "c"))
-        self.assertEqual(state.dhcp_trusted_ports, [23])
+    def test_reads_dhcp_enabled_and_servers(self):
+        state = read_hardening_state(CompliantClient("h", "c"))
+        self.assertTrue(state.dhcp_enabled)
         self.assertEqual(state.dhcp_trusted_servers, ["192.168.1.1"])
 
 if __name__ == "__main__":

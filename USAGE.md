@@ -548,15 +548,19 @@ DHCP-server messages that enter on an untrusted port.
 > The trusted-IP list is a second layer, not a rescue for a wrongly screened
 > uplink.
 
-**Confirmed read-back (dlink1):** the SNMP trusted-port table
-`1.3.6.1.4.1.171.10.76.20.1.14.2.1.1.2.<port>` holds value **2 = trusted**,
-**1 = screened**; the trusted-server table `…14.7.3.1.2` returns `192.168.1.1`.
-Run `python3 netcheck.py --verbose --no-fix` and check 9 prints
-`DHCP trusted ports …; trusted servers …`. Check 9 **warns** if any access port
-is trusted (`access ports trusted, granting rogue-server access`) or if a
-server-facing/uplink port is screened (`uplink/server port screened, blocking the
-trusted server`) — the uplink set comes from `uplink_ports` (per switch). A
-fresh switch with **all ports trusted** fails both ways — tighten it as above.
+**Read-back (dlink1):** the trusted-server table `…14.7.3.1.2` returns
+`192.168.1.1`, and the global state `…14.1.1.0` is set. **Per-port trust is not
+exposed over SNMP on this firmware** — the `…14.2.1.1` table's per-port column
+reads `0` for every port regardless of the web-UI checkboxes, so the tool does
+**not** infer port trust and will not raise false "access port trusted" findings.
+Check 9 therefore verifies only what SNMP exposes:
+
+- `DHCP Server Screening: disabled` — the global screening state is off.
+- `no trusted DHCP server IP configured` — the trusted-server list is empty.
+
+Run `python3 netcheck.py --verbose --no-fix`; check 9 prints `DHCP screening
+enabled=… ; trusted servers …`. Confirm the per-port trust in the web UI and use
+**check 6** (rogue DHCP) for actual rogue detection.
 
 **Why:** prevents a rogue DHCP server on an access port from handing out leases.
 The tool's check 6 detects rogues; screening stops the next one.

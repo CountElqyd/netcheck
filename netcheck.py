@@ -1928,9 +1928,7 @@ def _lan_has_mgmt(lan: LanInterface, cfg: Config) -> bool:
     return False
 
 
-def ensure_mgmt_address(cfg: Config, lan: LanInterface | None,
-                        allow_fix: bool = True, tty=None,
-                        runner=run_command) -> MgmtAddressResult:
+def ensure_mgmt_address(cfg: Config, lan: LanInterface | None) -> MgmtAddressResult:
     if lan is None:
         return MgmtAddressResult(False, detail="no wired LAN interface")
     addr = _validate_mgmt_address(cfg)
@@ -1938,17 +1936,8 @@ def ensure_mgmt_address(cfg: Config, lan: LanInterface | None,
         raise ValueError(f"invalid interface name {lan.name!r}")
     if _lan_has_mgmt(lan, cfg):
         return MgmtAddressResult(False, addr, lan.name, None, "present")
-    argv = mgmt_add_argv(lan.name, addr)
-    if not allow_fix:
-        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
-    question = f"Add {addr}/24 to {lan.name} for switch access?"
-    if not prompt_yes_no(question, tty=tty):
-        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
-    runner(argv)
-    refreshed = resolve_lan_interface(cfg, runner=runner)
-    if refreshed is not None and _lan_has_mgmt(refreshed, cfg):
-        return MgmtAddressResult(True, addr, lan.name, argv, "added")
-    return MgmtAddressResult(False, addr, lan.name, argv, "could not add")
+    return MgmtAddressResult(False, addr, lan.name,
+                             mgmt_add_argv(lan.name, addr), "missing")
 
 
 def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
@@ -2003,15 +1992,15 @@ def format_command(argv: list[str], platform: str | None = None) -> str:
 
 
 def _report_mgmt(result: MgmtAddressResult) -> None:
-    if result.added:
-        print(f"added {result.address}/24 to {result.interface} (removed on exit)")
+    if result.detail != "missing" or not result.command:
         return
-    if result.command and result.detail in ("declined", "could not add"):
-        command = " ".join(result.command)
-        if sys.platform.startswith("win"):
-            print(f"could not add {result.address}/24; run as Administrator: {command}")
-        else:
-            print(f"could not add {result.address}/24; run: sudo {command}")
+    command = format_command(result.command)
+    print(f"add {result.address}/24 to {result.interface} for switch access, "
+          "then re-run netcheck:")
+    if sys.platform.startswith("win"):
+        print(f"  run as Administrator: {command}")
+    else:
+        print(f"  sudo {command}")
 
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
@@ -2060,8 +2049,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         if quick:
             return
 
-        mgmt = ensure_mgmt_address(cfg, lan, allow_fix=allow_fix, tty=tty,
-                                   runner=runner)
+        mgmt = ensure_mgmt_address(cfg, lan)
         added_mgmt = mgmt.added
         mgmt_iface = mgmt.interface
         _report_mgmt(mgmt)

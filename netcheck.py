@@ -3,22 +3,40 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""netcheck - diagnose office internet problems and audit the switch fabric."""
+"""netcheck — read-only audit of a small wired office LAN.
+
+Runs a fixed sequence of diagnostics from the wired NIC: local configuration,
+gateway, internet-by-IP, DNS, switch reachability, rogue DHCP, and loop/storm
+hints (checks 1-7). Device inventory (8), the hardening audit (9), and storm
+threshold sampling (10) are opt-in and run alone.
+
+The tool is read-only: it only pings, queries DNS, and walks SNMP. The single
+write path is the explicit ``--remove-mgmt-ip`` maintenance flag. See USAGE.md
+for the operator guide.
+"""
 
 from __future__ import annotations
 
 import argparse
+import configparser
+import enum
 import ipaddress
 import json
+import os
+import random
+import re
+import shlex
 import shutil
+import socket
+import struct
+import subprocess
 import sys
 import textwrap
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 __version__ = "0.6.0"
-
-
-import enum
-from dataclasses import dataclass, field
 
 
 class Status(enum.Enum):
@@ -241,11 +259,6 @@ def main(argv: list[str] | None = None) -> int:
         with open(_log_path(stamp), "w") as fh:
             fh.write(reporter.render(color=False) + "\n")
     return reporter.exit_code()
-
-
-import configparser
-import os
-from collections.abc import Mapping
 
 _DEFAULT_SWITCHES = {f"dlink{i}": f"10.90.90.{89 + i}" for i in range(1, 6)}
 
@@ -485,10 +498,6 @@ def ber_decode_oid(value: bytes) -> str:
         parts.append(n)
     return ".".join(str(p) for p in parts)
 
-
-import random
-import socket
-
 TAG_INTEGER = 0x02
 TAG_OCTET = 0x04
 TAG_NULL = 0x05
@@ -711,12 +720,6 @@ def lookup_vendor(mac: str) -> str | None:
     if len(normalized) < 6:
         return None
     return OUI_TABLE.get(normalized[:6])
-
-
-import re
-import shlex
-import subprocess
-
 
 def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
     try:
@@ -977,11 +980,6 @@ def ping(host: str, count: int = 10, timeout: float = 3.0,
     _, out, _ = runner(ping_argv(host, count, source=source),
                        timeout=count * timeout + 5)
     return parse_ping_output(host, out)
-
-
-import struct
-import time
-
 
 def build_dns_query(name: str, txid: int) -> bytes:
     header = struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0)

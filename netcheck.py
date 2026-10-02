@@ -154,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print only the summary line")
     parser.add_argument("--json", action="store_true",
                         help="emit machine-readable JSON instead of the report")
+    parser.add_argument("--remove-mgmt-ip", action="store_true",
+                        help="remove the transient switch-management address and exit")
     return parser
 
 
@@ -175,6 +177,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(path=args.config)
     cfg.timeout = args.timeout
     cfg.verbose = args.verbose
+    if args.remove_mgmt_ip:
+        lan = resolve_lan_interface(cfg)
+        if lan is None:
+            print("no wired LAN interface found", file=sys.stderr)
+            return 1
+        remove_mgmt_address(cfg, lan.name)
+        print(f"removed {cfg.mgmt_address}/24 from {lan.name}")
+        return 0
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
@@ -1972,10 +1982,22 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
     return applied
 
 
+def _report_mgmt(result: MgmtAddressResult) -> None:
+    if result.added:
+        print(f"added {result.address}/24 to {result.interface} (removed on exit)")
+        return
+    if result.command and result.detail in ("declined", "could not add"):
+        command = " ".join(result.command)
+        if sys.platform.startswith("win"):
+            print(f"could not add {result.address}/24; run as Administrator: {command}")
+        else:
+            print(f"could not add {result.address}/24; run: sudo {command}")
+
+
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
             allow_fix: bool = True, tty=None, runner=run_command,
-            verbose: bool = False) -> None:
+            verbose: bool = False, lan=None) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
         _diag(cfg, f"check {check_id}: {title}")
         try:
@@ -1997,16 +2019,37 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                f"quick={quick} hardening={hardening}")
     _diag(cfg, "snmp_community=" + ("set" if cfg.snmp_community else "not set"))
 
+    if lan is None:
+        lan = resolve_lan_interface(cfg, runner)
+    source_for = lan.source_for if lan is not None else (lambda dst: None)
+    _diag(cfg, f"lan_interface={lan.name} ({lan.primary_ip})" if lan
+               else "lan_interface=none")
+    added_mgmt = False
+    mgmt_iface: str | None = None
+
     try:
-        layer_ping = lambda host, **kw: ping(host, runner=runner, **kw)  # noqa: E731
+        layer_ping = lambda host, **kw: ping(host, runner=runner,  # noqa: E731
+                                             source=source_for(host), **kw)
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
-            server, name, timeout=kw.get("timeout", cfg.timeout))
+            server, name, timeout=kw.get("timeout", cfg.timeout),
+            source=source_for(server))
         _diag(cfg, "checks 1-4: local config, gateway, internet, DNS")
         run_layer_checks(cfg, reporter,
-                         local_fn=lambda: detect_local_config(cfg, runner=runner),
+                         local_fn=lambda: detect_local_config(cfg, runner, lan=lan),
                          ping_fn=layer_ping, query_fn=layer_query)
         if quick:
             return
+
+        mgmt = ensure_mgmt_address(cfg, lan, allow_fix=allow_fix, tty=tty,
+                                   runner=runner)
+        _report_mgmt(mgmt)
+        added_mgmt = mgmt.added
+        mgmt_iface = mgmt.interface
+        if mgmt.added:
+            refreshed = resolve_lan_interface(cfg, runner)
+            if refreshed is not None:
+                lan = refreshed
+                source_for = lan.source_for
 
         _run_check(5, "Switches",
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
@@ -2014,7 +2057,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         rogue_macs: list[str] = []
 
         def _rogue() -> None:
-            result, macs = check_rogue_dhcp(cfg)
+            result, macs = check_rogue_dhcp(cfg, iface=lan.name if lan else None)
             reporter.add(result)
             rogue_macs.extend(macs)
 
@@ -2022,26 +2065,33 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         if sample is not None:
             def _sample_only() -> None:
-                measured = measure_storm_threshold(cfg, sample_seconds=sample)
+                measured = measure_storm_threshold(
+                    cfg, sample_seconds=sample,
+                    source=source_for("10.90.90.90"))
                 reporter.add(format_threshold_samples(measured))
             _run_check(10, "Storm thresholds", _sample_only)
 
         if hardening:
             def _hardening() -> None:
-                measured = (measure_storm_threshold(cfg, sample_seconds=sample)
+                measured = (measure_storm_threshold(
+                                cfg, sample_seconds=sample,
+                                source=source_for("10.90.90.90"))
                             if sample is not None else {})
-                reporter.add(check_hardening(cfg, measured=measured))
+                reporter.add(check_hardening(cfg, measured=measured,
+                                             source=source_for("10.90.90.90")))
 
             _run_check(9, "Hardening audit", _hardening)
 
         def _storm() -> None:
-            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)
+            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
+                                runner=runner, source=source_for(cfg.gateway))
             reporter.add(check_storm_hints(cfg, gateway_ping))
 
         _run_check(8, "Loop/storm hints", _storm)
 
         def _inventory() -> None:
-            reporter.add(check_device_inventory(cfg, rogue_macs))
+            reporter.add(check_device_inventory(
+                cfg, rogue_macs, source=source_for("10.90.90.90")))
 
         _run_check(7, "Device inventory", _inventory)
 
@@ -2056,6 +2106,9 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         reporter.add(CheckResult(98, "Internal error", Status.WARN, detail=str(exc),
                                  likely_cause="An unexpected error interrupted the checks.",
                                  suggested_fix="Re-run with --verbose for details."))
+    finally:
+        if added_mgmt and mgmt_iface:
+            remove_mgmt_address(cfg, mgmt_iface, runner=runner)
 
 
 if __name__ == "__main__":

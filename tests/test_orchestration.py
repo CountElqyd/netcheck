@@ -217,6 +217,36 @@ class TestOrchestration(unittest.TestCase):
         self.assertIn("Traceback", stderr.getvalue())
         self.assertIn("storm boom", stderr.getvalue())
 
+    def test_parser_has_remove_mgmt_ip(self):
+        self.assertFalse(netcheck.build_parser().parse_args([]).remove_mgmt_ip)
+        self.assertTrue(
+            netcheck.build_parser().parse_args(["--remove-mgmt-ip"]).remove_mgmt_ip)
+
+    def test_run_all_sources_pings_from_management_address(self):
+        lan = netcheck.LanInterface(
+            "eth0", "192.168.1.50",
+            [netcheck.InterfaceAddr("192.168.1.50", 24),
+             netcheck.InterfaceAddr("10.90.90.100", 24)])
+        seen = []
+
+        def runner(args, timeout=10.0):
+            seen.append(list(args))
+            return 0, "", ""
+
+        reporter = netcheck.Reporter(color=False)
+        orig_resolve = netcheck.resolve_lan_interface
+        orig_rogue = netcheck.check_rogue_dhcp
+        netcheck.resolve_lan_interface = lambda *a, **k: lan
+        netcheck.check_rogue_dhcp = lambda *a, **k: (
+            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, allow_fix=False, runner=runner)
+        finally:
+            netcheck.resolve_lan_interface = orig_resolve
+            netcheck.check_rogue_dhcp = orig_rogue
+        pings = [a for a in seen if a and a[0] == "ping"]
+        self.assertTrue(any("10.90.90.100" in a for a in pings))
+
 
 if __name__ == "__main__":
     unittest.main()

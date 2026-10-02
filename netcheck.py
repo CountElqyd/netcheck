@@ -1547,20 +1547,17 @@ def access_devices(devs: Devicelist, uplink_of) -> Devicelist:
 
 def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
-    rows: list[tuple[str, int, str]] = []
-    for switch, macs in devs.devices.items():
-        for mac, port in macs.items():
-            rows.append((switch, port, mac))
-    order = {name: i for i, name in enumerate(devs.devices)}
-    rows.sort(key=lambda r: (order[r[0]], r[1], r[2]))
-    switch_w = max((len(r[0]) for r in rows), default=0)
-    port_w = max((len(str(r[1])) for r in rows), default=0)
+    port_w = max((len(str(port)) for macs in devs.devices.values()
+                  for port in macs.values()), default=0)
     lines: list[str] = []
-    for switch, port, mac in rows:
-        vendor = lookup_vendor(mac) or ""
-        flag = "  ROGUE" if mac.upper() in rogue else ""
-        lines.append(f"    {switch:<{switch_w}}  port {port:>{port_w}}  "
-                     f"{mac}  {vendor}{flag}")
+    for switch, macs in devs.devices.items():
+        if not macs:
+            continue
+        lines.append(f"    {switch}")
+        for port, mac in sorted((p, m) for m, p in macs.items()):
+            vendor = lookup_vendor(mac) or ""
+            flag = "  ROGUE" if mac.upper() in rogue else ""
+            lines.append(f"        port {port:>{port_w}}  {mac}  {vendor}{flag}")
     lines.extend(f"    {err}" for err in devs.errors)
     return "\n".join(lines)
 

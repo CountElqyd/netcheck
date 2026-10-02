@@ -1859,6 +1859,84 @@ def prompt_yes_no(question: str, tty=None) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+@dataclass
+class MgmtAddressResult:
+    added: bool
+    address: str | None = None
+    interface: str | None = None
+    command: list[str] | None = None
+    detail: str = ""
+
+
+def _validate_mgmt_address(cfg: Config) -> str:
+    addr = ipaddress.ip_address(cfg.mgmt_address)
+    if addr not in _MGMT_NETWORK:
+        raise ValueError(f"{cfg.mgmt_address} is outside {_MGMT_NETWORK}")
+    if addr == _MGMT_NETWORK.network_address or addr == _MGMT_NETWORK.broadcast_address:
+        raise ValueError(f"{cfg.mgmt_address} is not a usable host address")
+    return str(addr)
+
+
+def mgmt_add_argv(iface: str, addr: str, platform: str | None = None) -> list[str]:
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        return ["netsh", "interface", "ipv4", "add", "address", iface, addr,
+                "255.255.255.0"]
+    if platform == "darwin":
+        return ["ifconfig", iface, "alias", addr, "255.255.255.0"]
+    return ["ip", "addr", "replace", f"{addr}/24", "dev", iface]
+
+
+def mgmt_del_argv(iface: str, addr: str, platform: str | None = None) -> list[str]:
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        return ["netsh", "interface", "ipv4", "delete", "address", iface, addr]
+    if platform == "darwin":
+        return ["ifconfig", iface, "-alias", addr]
+    return ["ip", "addr", "del", f"{addr}/24", "dev", iface]
+
+
+def _lan_has_mgmt(lan: LanInterface, cfg: Config) -> bool:
+    for addr in lan.addrs:
+        try:
+            if ipaddress.ip_address(addr.ip) in _MGMT_NETWORK:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def ensure_mgmt_address(cfg: Config, lan: LanInterface | None,
+                        allow_fix: bool = True, tty=None,
+                        runner=run_command) -> MgmtAddressResult:
+    if lan is None:
+        return MgmtAddressResult(False, detail="no wired LAN interface")
+    addr = _validate_mgmt_address(cfg)
+    if lan.name.startswith("-"):
+        raise ValueError(f"invalid interface name {lan.name!r}")
+    if _lan_has_mgmt(lan, cfg):
+        return MgmtAddressResult(False, addr, lan.name, None, "present")
+    argv = mgmt_add_argv(lan.name, addr)
+    if not allow_fix:
+        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
+    question = f"Add {addr}/24 to {lan.name} for switch access?"
+    if not prompt_yes_no(question, tty=tty):
+        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
+    runner(argv)
+    refreshed = resolve_lan_interface(cfg, runner=runner)
+    if refreshed is not None and _lan_has_mgmt(refreshed, cfg):
+        return MgmtAddressResult(True, addr, lan.name, argv, "added")
+    return MgmtAddressResult(False, addr, lan.name, argv, "could not add")
+
+
+def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
+    try:
+        addr = _validate_mgmt_address(cfg)
+    except ValueError:
+        return
+    runner(mgmt_del_argv(iface, addr))
+
+
 def dns_servers(cfg: Config) -> tuple[str, str]:
     return "1.1.1.1", "8.8.8.8"
 

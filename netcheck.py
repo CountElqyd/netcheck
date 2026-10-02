@@ -1221,16 +1221,24 @@ def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
                      ping_fn=ping, query_fn=dns_query) -> None:
     if local_fn is None:
         local_fn = lambda: detect_local_config(cfg)
+    _diag(cfg, "starting check 1: Local config")
     local = check_local_config(cfg, local_fn=local_fn)
     reporter.add(local)
+    _diag(cfg, "check 1 done")
     if local.status is Status.FAIL:
         return
+    _diag(cfg, "starting check 2: Gateway")
     gateway = check_gateway(cfg, ping_fn=ping_fn)
     reporter.add(gateway)
+    _diag(cfg, "check 2 done")
     if gateway.status is Status.FAIL:
         return
+    _diag(cfg, "starting check 3: Internet by IP")
     reporter.add(check_internet(cfg, ping_fn=ping_fn))
+    _diag(cfg, "check 3 done")
+    _diag(cfg, "starting check 4: DNS")
     reporter.add(check_dns(cfg, query_fn=query_fn))
+    _diag(cfg, "check 4 done")
 
 
 def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
@@ -1947,7 +1955,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
             runner=run_command, verbose: bool = False, lan=None) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
-        _diag(cfg, f"check {check_id}: {title}")
+        _diag(cfg, f"starting check {check_id}: {title}")
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - isolate each fabric check
@@ -1958,6 +1966,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                                      detail=f"check failed: {exc}",
                                      likely_cause="An unexpected error interrupted this check.",
                                      suggested_fix="Re-run with --verbose for details."))
+        _diag(cfg, f"check {check_id} done")
 
     _diag(cfg, f"netcheck {__version__} on {sys.platform}, "
                f"python {sys.version.split()[0]}")
@@ -1979,7 +1988,6 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
             server, name, timeout=kw.get("timeout", cfg.timeout),
             source=source_for(server))
-        _diag(cfg, "checks 1-4: local config, gateway, internet, DNS")
         run_layer_checks(cfg, reporter,
                          local_fn=lambda: detect_local_config(cfg, runner, lan=lan),
                          ping_fn=layer_ping, query_fn=layer_query)

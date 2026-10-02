@@ -385,6 +385,24 @@ class TestOrchestration(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("could not remove", stderr.getvalue())
 
+    def test_verbose_marks_each_layer_check(self):
+        reporter = netcheck.Reporter(color=False)
+        stderr = io.StringIO()
+        local = netcheck.LocalConfig(ip="192.168.1.50",
+                                     gateway="192.168.1.1", dns=["1.1.1.1"])
+        ping_ok = lambda h, **k: netcheck.PingResult(
+            host=h, transmitted=10, received=10, loss_pct=0.0,
+            min_ms=1.0, avg_ms=1.0, max_ms=1.0)
+        query_ok = lambda s, n, **k: (True, 1.0, ["1.2.3.4"])
+        with contextlib.redirect_stderr(stderr):
+            netcheck.run_layer_checks(netcheck.Config(verbose=True), reporter,
+                                      local_fn=lambda: local,
+                                      ping_fn=ping_ok, query_fn=query_ok)
+        out = stderr.getvalue()
+        for n in (1, 2, 3, 4):
+            self.assertIn(f"starting check {n}", out)
+            self.assertIn(f"check {n} done", out)
+
 
 if __name__ == "__main__":
     unittest.main()

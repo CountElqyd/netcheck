@@ -1,7 +1,9 @@
 import unittest
+from unittest import mock
 
 from netcheck import (
     SnmpClient,
+    SnmpError,
     _encode_request,
     _oid_key,
     _parse_response,
@@ -65,6 +67,16 @@ class TestSnmp(unittest.TestCase):
     def test_client_construction(self):
         client = SnmpClient("10.90.90.90", "public")
         self.assertEqual(client.host, "10.90.90.90")
+
+    def test_client_binds_source(self):
+        with mock.patch("netcheck.socket.socket") as sock_cls:
+            sock = sock_cls.return_value
+            sock.recvfrom.side_effect = OSError("timeout")
+            client = SnmpClient("10.90.90.90", "public",
+                                source="10.90.90.100", retries=0)
+            with self.assertRaises(SnmpError):
+                client._exchange(b"\x00")
+            sock.bind.assert_called_once_with(("10.90.90.100", 0))
 
 
 if __name__ == "__main__":

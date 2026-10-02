@@ -126,6 +126,18 @@ class TestCollectDevices(unittest.TestCase):
         result = collect_devices(Config(), client_factory=FakeClient)
         self.assertEqual(result.devices, {})
 
+    def test_source_is_forwarded_to_client_factory(self):
+        seen = {}
+
+        class CapturingClient(FakeClient):
+            def __init__(self, host, community, **kw):
+                super().__init__(host, community, **kw)
+                seen["source"] = kw.get("source")
+
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
+        collect_devices(cfg, client_factory=CapturingClient, source="10.90.90.100")
+        self.assertEqual(seen["source"], "10.90.90.100")
+
 
 class TestUplinkPortParsing(unittest.TestCase):
     def test_single_port_and_range(self):

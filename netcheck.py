@@ -559,12 +559,14 @@ def _oid_in_subtree(oid: str, base: str) -> bool:
 
 class SnmpClient:
     def __init__(self, host: str, community: str, version: str = "2c",
-                 timeout: float = 3.0, retries: int = 2):
+                 timeout: float = 3.0, retries: int = 2,
+                 source: str | None = None):
         self.host = host
         self.community = community
         self.version = version
         self.timeout = timeout
         self.retries = retries
+        self.source = source
         self.version_int = _VERSION_INT.get(version, 1)
         self.request_id = random.randint(1, 2 ** 31 - 1)
 
@@ -574,6 +576,8 @@ class SnmpClient:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(self.timeout)
             try:
+                if self.source:
+                    sock.bind((self.source, 0))
                 sock.sendto(packet, (self.host, 161))
                 data, _ = sock.recvfrom(65535)
                 return data
@@ -1395,14 +1399,16 @@ def _walk_fdb(client) -> list[tuple[str, object, str]]:
     return []
 
 
-def collect_devices(cfg: Config, client_factory=SnmpClient) -> Devicelist:
+def collect_devices(cfg: Config, client_factory=SnmpClient,
+                    source: str | None = None) -> Devicelist:
     result = Devicelist()
     if not cfg.snmp_community:
         return result
     for name, host in cfg.switches.items():
         result.devices[name] = {}
         try:
-            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            client = client_factory(host, cfg.snmp_community,
+                                    timeout=cfg.timeout, source=source)
             rows = _walk_fdb(client)
             if not rows:
                 continue
@@ -1467,7 +1473,8 @@ def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
 
 
 def check_device_inventory(cfg: Config, rogue_macs: list[str],
-                           client_factory=SnmpClient) -> CheckResult:
+                           client_factory=SnmpClient,
+                           source: str | None = None) -> CheckResult:
     title = "Device inventory"
     if not cfg.snmp_community:
         return CheckResult(7, title, Status.WARN,
@@ -1475,7 +1482,7 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            likely_cause="The inventory needs read-only SNMP on each switch.",
                            suggested_fix="Set the SNMP community (NETCHECK_SNMP_COMMUNITY "
                                          "or netcheck.ini).")
-    devs = collect_devices(cfg, client_factory=client_factory)
+    devs = collect_devices(cfg, client_factory=client_factory, source=source)
     raw_total = sum(len(m) for m in devs.devices.values())
     filtered = access_devices(devs, lambda switch: uplink_ports_for(cfg, switch))
     total = sum(len(m) for m in filtered.devices.values())
@@ -1648,7 +1655,8 @@ def read_hardening_state(client) -> HardeningState:
 
 
 def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
-                    client_factory=SnmpClient) -> CheckResult:
+                    client_factory=SnmpClient,
+                    source: str | None = None) -> CheckResult:
     if not cfg.snmp_community:
         return CheckResult(9, "Hardening audit", Status.WARN,
                            detail="SNMP community not set; cannot audit switches")
@@ -1656,7 +1664,8 @@ def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
     findings: list[str] = []
     for name, host in cfg.switches.items():
         try:
-            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            client = client_factory(host, cfg.snmp_community,
+                                    timeout=cfg.timeout, source=source)
             state = read_hardening_state(client)
             if not state.readable:
                 findings.append(f"{name}: hardening MIB not exposed by this firmware "
@@ -1729,7 +1738,8 @@ def _counter_snapshot(client) -> dict[str, int]:
 
 
 def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
-                            client_factory=SnmpClient) -> dict[str, dict]:
+                            client_factory=SnmpClient,
+                            source: str | None = None) -> dict[str, dict]:
     if not cfg.snmp_community or sample_seconds <= 0:
         return {}
     import concurrent.futures
@@ -1737,7 +1747,8 @@ def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
     def per_switch(item: tuple[str, str]) -> tuple[str, dict]:
         name, host = item
         try:
-            client = client_factory(host, cfg.snmp_community, timeout=cfg.timeout)
+            client = client_factory(host, cfg.snmp_community,
+                                    timeout=cfg.timeout, source=source)
             before = _counter_snapshot(client)
             time.sleep(sample_seconds)
             after = _counter_snapshot(client)

@@ -7,6 +7,7 @@ from netcheck import (
     DhcpProbe,
     RogueResponder,
     Status,
+    _dhcp_chaddr,
     check_rogue_dhcp,
     scapy_dhcp_discover,
 )
@@ -39,12 +40,22 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.WARN)
         self.assertIn("not tested", result.detail)
         self.assertIn("scapy not installed", result.detail)
+        self.assertIn('sudo -E env "PATH=$PATH" uv run', result.suggested_fix)
 
     def test_no_responders_warns(self):
         result, _ = check_rogue_dhcp(
             Config(), discover_fn=lambda cfg=None, iface=None: DhcpProbe([]))
         self.assertIs(result.status, Status.WARN)
         self.assertIn("no DHCP server answered", result.detail)
+        self.assertNotIn("renews", result.suggested_fix)
+
+    def test_chaddr_uses_real_mac_padded(self):
+        self.assertEqual(_dhcp_chaddr("34:CE:00:51:23:14"),
+                         bytes.fromhex("34ce00512314") + b"\x00" * 10)
+
+    def test_chaddr_falls_back_to_zeros(self):
+        self.assertEqual(_dhcp_chaddr(None), b"\x00" * 16)
+        self.assertEqual(_dhcp_chaddr("not-a-mac"), b"\x00" * 16)
 
     def test_scapy_missing_reports_reason(self):
         real_import = builtins.__import__

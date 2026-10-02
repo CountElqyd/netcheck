@@ -83,10 +83,13 @@ admin/root or `scapy`, check 6 reports `WARN: not tested`; run
 | 4 | DNS | Resolves a test domain on ISP DNS and public DNS |
 | 5 | Switches | Pings all five management IPs |
 | 6 | Rogue DHCP | scapy broadcast discover; flags any non-gateway responder |
-| 7 | Device inventory | SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports are hidden) |
-| 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter |
+| 7 | Loop/storm hints | LBD loop ports + gateway loss/jitter |
+| 8 | Device inventory | **Opt-in** (`--inventory`): SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports are hidden) |
 | 9 | Hardening audit | **Opt-in** (`--hardening`): read-only per-switch audit vs the hardening baseline |
 | 10 | Storm thresholds | **Opt-in** (`--sample SECONDS`): per-switch storm-threshold recommendations |
+
+Opt-in checks run alone: passing `--inventory`, `--hardening`, and/or `--sample`
+skips the default 1-7 suite and prints only the requested check(s).
 
 Exit codes: `0` clean, `1` at least one `WARN`, `2` at least one `FAIL`. The
 operator guide lists every check's exact criteria, the sample output, scenario

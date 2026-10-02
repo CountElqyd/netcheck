@@ -2,7 +2,7 @@ import struct
 import unittest
 from unittest import mock
 
-from netcheck import build_dns_query, dns_query, parse_dns_a
+from netcheck import build_dns_query, dns_query, parse_dns_a, read_interface_dns
 
 
 def _response(txid: int, name: str, ip: bytes) -> bytes:
@@ -56,6 +56,28 @@ class TestDns(unittest.TestCase):
             sock.recvfrom.side_effect = OSError("no reply")
             dns_query("1.1.1.1", "example.com")
             sock.bind.assert_not_called()
+
+    def test_interface_dns_uses_resolvectl(self):
+        def runner(argv):
+            return 0, "Link 2 (eth0): 192.168.1.1 8.8.8.8\n", ""
+        self.assertEqual(read_interface_dns("eth0", runner),
+                         ["192.168.1.1", "8.8.8.8"])
+
+    def test_interface_dns_falls_back_to_nmcli(self):
+        def runner(argv):
+            if argv[0] == "resolvectl":
+                return 1, "", "not found"
+            return 0, "192.168.1.1\n1.1.1.1\n", ""
+        self.assertEqual(read_interface_dns("eth0", runner),
+                         ["192.168.1.1", "1.1.1.1"])
+
+    def test_interface_dns_returns_none_when_tools_missing(self):
+        def runner(argv):
+            raise OSError("missing")
+        self.assertIsNone(read_interface_dns("eth0", runner))
+
+    def test_interface_dns_none_without_iface(self):
+        self.assertIsNone(read_interface_dns(None))
 
 
 if __name__ == "__main__":

@@ -76,7 +76,8 @@ class TestWiredCheckOne(unittest.TestCase):
     def test_detect_uses_wired_nic(self):
         cfg = Config()
         lan = self._lan("192.168.1.50")
-        with mock.patch("netcheck.read_dns_servers", return_value=["1.1.1.1"]), \
+        with mock.patch("netcheck.read_interface_dns", return_value=None), \
+             mock.patch("netcheck.read_dns_servers", return_value=["1.1.1.1"]), \
              mock.patch("netcheck.default_route_interface", return_value="wlan0"):
             lc = detect_local_config(cfg, lan=lan)
         self.assertEqual(lc.interface, "eth0")
@@ -84,20 +85,42 @@ class TestWiredCheckOne(unittest.TestCase):
         self.assertEqual(lc.gateway, "192.168.1.1")
         self.assertEqual(lc.default_route_interface, "wlan0")
 
-    def test_pass_with_wifi_primary_note(self):
+    def test_pass_reports_wired_only_detail(self):
         cfg = Config()
         lan = self._lan("192.168.1.50")
-        with mock.patch("netcheck.read_dns_servers", return_value=["1.1.1.1"]), \
+        with mock.patch("netcheck.read_interface_dns", return_value=None), \
+             mock.patch("netcheck.read_dns_servers",
+                        return_value=["192.168.68.1", "1.1.1.1", "192.168.1.1"]), \
              mock.patch("netcheck.default_route_interface", return_value="wlan0"):
             result = check_local_config(
                 cfg, local_fn=lambda: detect_local_config(cfg, lan=lan))
         self.assertIs(result.status, Status.PASS)
-        self.assertIn("wired LAN checked", result.detail)
+        self.assertNotIn("Wi-Fi", result.detail)
+        self.assertNotIn("default route", result.detail)
+        self.assertNotIn("192.168.68.1", result.detail)
+        self.assertIn("1.1.1.1", result.detail)
+        self.assertIn("192.168.1.1", result.detail)
+        self.assertIn("interface: eth0", result.detail)
+        self.assertIn("address  : 192.168.1.50/24", result.detail)
+        self.assertIn("gateway  : 192.168.1.1", result.detail)
+        self.assertIn("dns      : ", result.detail)
+
+    def test_scoped_interface_dns_is_not_filtered(self):
+        cfg = Config()
+        lan = self._lan("192.168.1.50")
+        with mock.patch("netcheck.read_interface_dns",
+                        return_value=["192.168.68.1", "1.1.1.1"]), \
+             mock.patch("netcheck.default_route_interface", return_value="wlan0"):
+            lc = detect_local_config(cfg, lan=lan)
+        self.assertTrue(lc.dns_scoped)
+        result = check_local_config(cfg, local_fn=lambda: lc)
+        self.assertIn("192.168.68.1", result.detail)
 
     def test_fail_when_not_on_office_lan(self):
         cfg = Config()
         lan = self._lan("10.90.90.100")
-        with mock.patch("netcheck.read_dns_servers", return_value=["1.1.1.1"]), \
+        with mock.patch("netcheck.read_interface_dns", return_value=None), \
+             mock.patch("netcheck.read_dns_servers", return_value=["1.1.1.1"]), \
              mock.patch("netcheck.default_route_interface", return_value="wlan0"):
             result = check_local_config(
                 cfg, local_fn=lambda: detect_local_config(cfg, lan=lan))

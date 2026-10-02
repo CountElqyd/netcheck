@@ -39,6 +39,11 @@ class CheckResult:
 
 _COLORS = {Status.PASS: "\033[32m", Status.WARN: "\033[33m", Status.FAIL: "\033[31m"}
 _RESET = "\033[0m"
+_BODY_INDENT = "      "
+
+
+def _semicolon_lines(value: str) -> str:
+    return value.replace("; ", "\n")
 
 
 class Reporter:
@@ -101,14 +106,16 @@ class Reporter:
         plain_tag = f"[{r.status.value}]"
         tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}" if use_color else plain_tag
         lines = [f"{tag} {head:<{title_width}}".rstrip()]
+        pad = _BODY_INDENT
         if r.detail:
-            lines.extend(self._wrap_block(r.detail, width, "      ", "      "))
+            lines.extend(self._wrap_block(_semicolon_lines(r.detail), width, pad, pad))
         for label, value in (("Likely cause", r.likely_cause),
                              ("Suggested fix", r.suggested_fix)):
             if value:
-                indent = " " * (5 + len(label) + 2)
-                lines.extend(self._wrap_block(value, width,
-                                              f"    {label}: ", indent,
+                initial = f"{pad}{label}: "
+                indent = " " * len(initial)
+                lines.extend(self._wrap_block(_semicolon_lines(value), width,
+                                              initial, indent,
                                               subsequent_initial_indent=indent))
         return lines
 
@@ -158,6 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "recommendations (also feeds --hardening)")
     parser.add_argument("--hardening", action="store_true",
                         help="run the opt-in hardening audit (check 9)")
+    parser.add_argument("--inventory", action="store_true",
+                        help="run only the opt-in device inventory (check 8)")
     parser.add_argument("--timeout", type=_positive_float, default=3.0,
                         help="per-operation network timeout (seconds)")
     parser.add_argument("--verbose", action="store_true",
@@ -189,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
     cfg = load_config(path=args.config)
+    if not os.path.exists(args.config):
+        print(f"warning: config file {args.config!r} not found; using built-in "
+              f"defaults (copy netcheck.ini.example to {args.config})",
+              file=sys.stderr)
     cfg.timeout = args.timeout
     cfg.verbose = args.verbose
     try:
@@ -213,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
-                hardening=args.hardening, verbose=args.verbose,
+                hardening=args.hardening, inventory=args.inventory,
+                verbose=args.verbose,
                 emit_advisory=not (args.json or args.quiet))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
@@ -1037,6 +1051,7 @@ class LocalConfig:
     mask: str | None = None
     gateway: str | None = None
     dns: list[str] = field(default_factory=list)
+    dns_scoped: bool = False
     interface: str | None = None
     default_route_interface: str | None = None
 
@@ -1101,6 +1116,24 @@ def read_dns_servers(runner=run_command) -> list[str]:
         return []
 
 
+def read_interface_dns(iface: str | None, runner=run_command) -> list[str] | None:
+    """Per-interface DNS when the platform tracks it, else None (use the global list)."""
+    if not iface or sys.platform.startswith("win") or sys.platform == "darwin":
+        return None
+    for argv in (["resolvectl", "dns", iface],
+                 ["nmcli", "-g", "IP4.DNS", "device", "show", iface]):
+        try:
+            rc, out, _ = runner(argv)
+        except OSError:
+            continue
+        if rc != 0:
+            continue
+        servers = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", out)
+        if servers:
+            return servers
+    return None
+
+
 def default_route_interface(runner=run_command) -> str | None:
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
@@ -1136,22 +1169,44 @@ def detect_local_config(cfg: Config, runner=run_command, lan=None) -> LocalConfi
             continue
     if lc.ip is None and lan.primary_ip:
         lc.ip = lan.primary_ip
-    lc.dns = read_dns_servers(runner)
+    scoped = read_interface_dns(lan.name, runner)
+    if scoped:
+        lc.dns = scoped
+        lc.dns_scoped = True
+    else:
+        lc.dns = read_dns_servers(runner)
     lc.default_route_interface = default_route_interface(runner)
     return lc
+
+
+def _label_block(pairs) -> str:
+    width = max((len(key) for key, _ in pairs), default=0)
+    return "\n".join(f"{key:<{width}}: {value}" for key, value in pairs)
+
+
+def _wired_dns(dns: list[str], office) -> list[str]:
+    kept: list[str] = []
+    for server in dns:
+        try:
+            ip = ipaddress.ip_address(server)
+        except ValueError:
+            continue
+        if not ip.is_private or ip in office:
+            kept.append(server)
+    return kept
 
 
 def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
     if local_fn is None:
         local_fn = lambda: detect_local_config(cfg)
     lc = local_fn()
-    prefix = f"{lc.interface} " if lc.interface else ""
-    detail = f"{prefix}{lc.ip or 'no IP'} {lc.mask or ''} " \
-             f"gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
-    if lc.default_route_interface and lc.interface \
-            and lc.default_route_interface != lc.interface:
-        detail += (f"\ndefault route via Wi-Fi ({lc.default_route_interface})"
-                   "; wired LAN checked")
+    dns = list(lc.dns) if lc.dns_scoped else _wired_dns(lc.dns, office_network(cfg))
+    detail = _label_block([
+        ("interface", lc.interface or "none"),
+        ("address", f"{lc.ip or 'none'}{lc.mask or ''}"),
+        ("gateway", lc.gateway or "none"),
+        ("dns", ", ".join(dns) or "none"),
+    ])
     if not lc.ip:
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
                            likely_cause="No IPv4 address on the wired LAN interface.",
@@ -1166,7 +1221,7 @@ def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
                            likely_cause=f"No wired address on the office LAN ({net}).",
                            suggested_fix="Plug in the LAN cable and renew DHCP on the "
                                          "wired NIC; Wi-Fi does not satisfy this check.")
-    if not lc.dns:
+    if not dns:
         return CheckResult(1, "Local config", Status.WARN, detail=detail,
                            likely_cause="No DNS servers configured.",
                            suggested_fix="Set DNS to 1.1.1.1/8.8.8.8 or the ISP DNS.")
@@ -1195,8 +1250,15 @@ def check_gateway(cfg: Config, ping_fn=ping) -> CheckResult:
 
 
 def check_internet(cfg: Config, ping_fn=ping) -> CheckResult:
-    reachable = [h for h in cfg.public_dns if ping_fn(h, count=4, timeout=cfg.timeout).received > 0]
-    detail = "reachable: " + (",".join(reachable) or "none")
+    rows: list[str] = []
+    reachable: list[str] = []
+    for host in cfg.public_dns:
+        ok = ping_fn(host, count=4, timeout=cfg.timeout).received > 0
+        rows.append(f"{host}: {'reply' if ok else 'no reply'}")
+        if ok:
+            reachable.append(host)
+    rows.append("reachable: " + (", ".join(reachable) or "none"))
+    detail = "\n".join(rows)
     if len(reachable) == len(cfg.public_dns):
         return CheckResult(3, "Internet by IP", Status.PASS, detail=detail)
     if reachable:
@@ -1209,18 +1271,21 @@ def check_internet(cfg: Config, ping_fn=ping) -> CheckResult:
 
 
 def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
-    rows: list[str] = []
+    entries: list[tuple[str, bool, float]] = []
     isp_ok = False
     public_ok = False
     for server in cfg.dns_servers:
         ok, ms, _ = query_fn(server, cfg.domain, timeout=cfg.timeout)
         isp_ok = isp_ok or ok
-        rows.append(f"{server}:{'ok' if ok else 'fail'} {ms:.0f}ms")
+        entries.append((server, ok, ms))
     for server in cfg.public_dns:
         ok, ms, _ = query_fn(server, cfg.domain, timeout=cfg.timeout)
         public_ok = public_ok or ok
-        rows.append(f"{server}:{'ok' if ok else 'fail'} {ms:.0f}ms")
-    detail = " ".join(rows)
+        entries.append((server, ok, ms))
+    width = max((len(server) for server, _, _ in entries), default=0)
+    detail = "\n".join(
+        f"{server:<{width}}: {'ok' if ok else 'fail'} {ms:.0f}ms"
+        for server, ok, ms in entries)
     if isp_ok and public_ok:
         return CheckResult(4, "DNS", Status.PASS, detail=detail)
     if public_ok and not isp_ok:
@@ -1287,23 +1352,44 @@ class DhcpProbe:
     reason: str = ""
 
 
+def _dhcp_chaddr(mac: str | None) -> bytes:
+    if not mac:
+        return b"\x00" * 16
+    try:
+        raw = bytes.fromhex(mac.replace(":", "").replace("-", ""))
+    except ValueError:
+        return b"\x00" * 16
+    return (raw + b"\x00" * 16)[:16]
+
+
 def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
                         iface: str | None = None) -> DhcpProbe:
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
         return DhcpProbe(None, "scapy not installed")
+    try:
+        from scapy.all import get_if_hwaddr
+    except ImportError:  # pragma: no cover - older scapy
+        get_if_hwaddr = None
     if iface is None:
         try:
             from scapy.all import conf
             iface = conf.route.route("10.90.90.90")[0]
         except Exception:  # noqa: BLE001 - scapy routing is best-effort
             iface = None
+    hwaddr = None
+    if iface is not None and get_if_hwaddr is not None:
+        try:
+            hwaddr = get_if_hwaddr(iface)
+        except Exception:  # noqa: BLE001 - interface lookup is best-effort
+            hwaddr = None
     try:
         packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
-                  / UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=b"\x00" * 16)
+                  / UDP(sport=68, dport=67)
+                  / BOOTP(op=1, chaddr=_dhcp_chaddr(hwaddr), flags=0x8000)
                   / DHCP(options=[("message-type", "discover"), "end"]))
-        answered, _ = srp(packet, timeout=timeout, verbose=False, iface=iface)
+        answered, _ = srp(packet, timeout=timeout, verbose=False, iface=iface, retry=1)
     except PermissionError:
         return DhcpProbe(None, "raw sockets denied (needs root or CAP_NET_RAW)")
     except OSError as exc:
@@ -1332,17 +1418,19 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
                             detail=f"not tested: {probe.reason}",
                             likely_cause="The rogue-DHCP probe could not run.",
                             suggested_fix="Install scapy (uv run --with scapy netcheck.py) and "
-                                          "grant raw-socket rights: sudo -E uv run --with scapy "
-                                          "netcheck.py, or sudo setcap cap_net_raw+ep "
-                                          "\"$(readlink -f \"$(command -v python3)\")\"."),
+                                          "grant raw-socket rights: sudo -E env \"PATH=$PATH\" "
+                                          "uv run --with scapy netcheck.py, or sudo setcap "
+                                          "cap_net_raw+ep \"$(readlink -f \"$(command -v python3)\")\"."),
                 [])
     responders = probe.responders
     if not responders:
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
                             detail="probed via scapy; no DHCP server answered on this segment",
-                            likely_cause="No DHCP offer was seen, though this host holds a lease.",
-                            suggested_fix="Re-run while a client renews; confirm the tool runs "
-                                          "as root/administrator."),
+                            likely_cause="No DHCP OFFER was seen. Either no DHCP server or "
+                                         "relay serves this VLAN, or the server ignored the probe.",
+                            suggested_fix="Confirm a DHCP server/relay serves the wired LAN; "
+                                          "if a rogue server is suspected, re-run as "
+                                          "root/administrator."),
                 [])
     rogues = [r for r in responders if r.server_ip != cfg.gateway]
     if not rogues:
@@ -1493,6 +1581,53 @@ def _walk_fdb(client) -> list[tuple[str, object, str]]:
     return []
 
 
+def read_interface_macs(iface: str | None, runner=run_command) -> set[str]:
+    """Uppercase MAC addresses of a local interface; empty when unknown."""
+    if not iface:
+        return set()
+    if sys.platform == "darwin":
+        _, out, _ = runner(["ifconfig", iface])
+        return {m.upper() for m in re.findall(r"ether\s+([0-9A-Fa-f:]{17})", out)}
+    if sys.platform.startswith("win"):
+        return set()
+    try:
+        with open(f"/sys/class/net/{iface}/address") as fh:
+            addr = fh.read().strip()
+    except OSError:
+        addr = ""
+    if addr:
+        return {addr.upper()}
+    _, out, _ = runner(["ip", "link", "show", iface])
+    return {m.upper() for m in re.findall(r"link/ether\s+([0-9A-Fa-f:]{17})", out)}
+
+
+def _is_valid_mac(mac: str) -> bool:
+    try:
+        octets = [int(part, 16) for part in mac.replace("-", ":").split(":")]
+    except ValueError:
+        return False
+    if len(octets) != 6 or any(o < 0 or o > 255 for o in octets):
+        return False
+    if all(o == 0 for o in octets):
+        return False
+    if octets[0] & 0x01:  # multicast / broadcast
+        return False
+    return True
+
+
+_TRUNK_MIN_MACS = 8
+
+
+def _trunk_ports(devs: Devicelist, switch: str, configured: set[int],
+                 min_macs: int = _TRUNK_MIN_MACS) -> set[int]:
+    """Configured uplinks plus ports that learn enough MACs to be a trunk."""
+    port_counts: dict[int, int] = {}
+    for port in devs.devices.get(switch, {}).values():
+        port_counts[port] = port_counts.get(port, 0) + 1
+    heavy = {port for port, n in port_counts.items() if n >= min_macs}
+    return set(configured) | heavy
+
+
 def collect_devices(cfg: Config, client_factory=SnmpClient,
                     source: str | None = None) -> Devicelist:
     result = Devicelist()
@@ -1509,7 +1644,7 @@ def collect_devices(cfg: Config, client_factory=SnmpClient,
             ifindex_map = resolve_ifindex_ports(client)
             for oid, value, base in rows:
                 mac = mac_from_oid_suffix(oid, base)
-                if mac is None or not isinstance(value, int):
+                if mac is None or not _is_valid_mac(mac) or not isinstance(value, int):
                     continue
                 result.devices[name][mac] = ifindex_map.get(value, value)
         except (SnmpError, ValueError) as exc:
@@ -1518,25 +1653,29 @@ def collect_devices(cfg: Config, client_factory=SnmpClient,
     return result
 
 
-def access_devices(devs: Devicelist, uplink_of) -> Devicelist:
+def access_devices(devs: Devicelist, uplink_of,
+                   min_trunk_macs: int = _TRUNK_MIN_MACS) -> Devicelist:
     """Drop uplink/trunk rows and duplicates so only end devices remain.
 
-    A MAC learned on a trunk port is infrastructure traffic (another switch or
-    the router). After removing configured uplink ports, a MAC still seen more
-    than once is kept on the least-populated port (the most access-like),
-    breaking ties by switch order then port number.
+    Infrastructure ports are the configured uplinks plus any port that learns
+    enough MACs to be a trunk (an inter-switch cascade or the router). A MAC is
+    then attributed to its access port; if it is still seen on more than one
+    access port, the least-populated port wins (the most access-like), breaking
+    ties by switch order then port number.
     """
-    counts = {switch: {} for switch in devs.devices}
+    infra = {switch: _trunk_ports(devs, switch, uplink_of(switch), min_trunk_macs)
+             for switch in devs.devices}
+    counts: dict[str, dict[int, int]] = {switch: {} for switch in devs.devices}
     for switch, macs in devs.devices.items():
         for port in macs.values():
             counts[switch][port] = counts[switch].get(port, 0) + 1
-    best: dict[str, tuple[tuple[int, int, int], str, int]] = {}
+    totals = {switch: len(macs) for switch, macs in devs.devices.items()}
+    best: dict[str, tuple[tuple[int, int, int, int], str, int]] = {}
     for order, (switch, macs) in enumerate(devs.devices.items()):
-        uplinks = uplink_of(switch)
         for mac, port in macs.items():
-            if port in uplinks:
+            if port in infra[switch]:
                 continue
-            rank = (counts[switch][port], order, port)
+            rank = (counts[switch][port], totals[switch], order, port)
             current = best.get(mac)
             if current is None or rank < current[0]:
                 best[mac] = (rank, switch, port)
@@ -1546,8 +1685,10 @@ def access_devices(devs: Devicelist, uplink_of) -> Devicelist:
     return Devicelist(devices=devices, errors=list(devs.errors))
 
 
-def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
+def format_inventory(devs: Devicelist, rogue_macs: list[str],
+                     local_macs: set[str] | None = None) -> str:
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
+    local = {m.replace("-", ":").upper() for m in (local_macs or set())}
     port_w = max((len(str(port)) for macs in devs.devices.values()
                   for port in macs.values()), default=0)
     lines: list[str] = []
@@ -1557,7 +1698,12 @@ def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
         lines.append(f"    {switch}")
         for port, mac in sorted((p, m) for m, p in macs.items()):
             vendor = lookup_vendor(mac) or ""
-            flag = "  ROGUE" if mac.upper() in rogue else ""
+            tags: list[str] = []
+            if mac.upper() in rogue:
+                tags.append("ROGUE")
+            if mac.upper() in local:
+                tags.append("this host")
+            flag = ("  " + ", ".join(tags)) if tags else ""
             lines.append(f"        port {port:>{port_w}}  {mac}  {vendor}{flag}")
     lines.extend(f"    {err}" for err in devs.errors)
     return "\n".join(lines)
@@ -1565,10 +1711,11 @@ def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
 
 def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            client_factory=SnmpClient,
-                           source: str | None = None) -> CheckResult:
+                           source: str | None = None,
+                           local_macs: set[str] | None = None) -> CheckResult:
     title = "Device inventory"
     if not cfg.snmp_community:
-        return CheckResult(7, title, Status.WARN,
+        return CheckResult(8, title, Status.WARN,
                            detail="SNMP community not set; cannot list devices",
                            likely_cause="The inventory needs read-only SNMP on each switch.",
                            suggested_fix="Set the SNMP community (NETCHECK_SNMP_COMMUNITY "
@@ -1577,7 +1724,11 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
     raw_total = sum(len(m) for m in devs.devices.values())
     filtered = access_devices(devs, lambda switch: uplink_ports_for(cfg, switch))
     total = sum(len(m) for m in filtered.devices.values())
-    table = format_inventory(filtered, rogue_macs)
+    table = format_inventory(filtered, rogue_macs, local_macs)
+    for switch, macs in devs.devices.items():
+        infra = sorted(_trunk_ports(devs, switch, uplink_ports_for(cfg, switch)))
+        rows = ", ".join(f"{mac}@{port}" for mac, port in sorted(macs.items()))
+        _diag(cfg, f"fdb {switch}: {rows or 'none'} | trunk ports={infra}")
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
     hits = [(switch, port, mac) for switch, macs in filtered.devices.items()
             for mac, port in macs.items() if mac.upper() in rogue]
@@ -1590,17 +1741,17 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
         summary += f" ({hidden} on uplink ports hidden)"
     if hits:
         where = ", ".join(f"{switch} port {port}" for switch, port, _ in hits)
-        return CheckResult(7, title, Status.FAIL,
+        return CheckResult(8, title, Status.FAIL,
                            detail=f"{summary}\nrogue on {where}\n{table}",
                            likely_cause="A non-gateway DHCP server is attached to the fabric.",
                            suggested_fix=f"Unplug the flagged device ({where}); enable DHCP "
                                          "Server Screening with 192.168.1.1 trusted.")
     if total == 0 and devs.errors:
-        return CheckResult(7, title, Status.WARN,
+        return CheckResult(8, title, Status.WARN,
                            detail="inventory unavailable\n" + table,
                            likely_cause="No switch returned an FDB.",
                            suggested_fix="Confirm SNMP is enabled and reachable on each switch.")
-    return CheckResult(7, title, Status.PASS, detail=summary + ("\n" + table if table else ""))
+    return CheckResult(8, title, Status.PASS, detail=summary + ("\n" + table if table else ""))
 
 
 def check_storm_hints(cfg: Config, gateway_result: PingResult,
@@ -1609,11 +1760,11 @@ def check_storm_hints(cfg: Config, gateway_result: PingResult,
     if gateway_result.max_ms is not None and gateway_result.min_ms is not None:
         jitter = gateway_result.max_ms - gateway_result.min_ms
     if gateway_result.loss_pct > 5 or (jitter is not None and jitter > 30):
-        return CheckResult(8, "Loop/storm hints", Status.WARN,
+        return CheckResult(7, "Loop/storm hints", Status.WARN,
                            detail=f"gateway loss {gateway_result.loss_pct:.0f}% jitter {jitter}",
                            likely_cause="Possible broadcast storm or flapping link.",
                            suggested_fix="Check LBD loop status and error counters on ports 23-27.")
-    return CheckResult(8, "Loop/storm hints", Status.PASS, detail="no storm indicators")
+    return CheckResult(7, "Loop/storm hints", Status.PASS, detail="no storm indicators")
 
 
 PRIVATE_ROOT = "1.3.6.1.4.1.171.10.76.20.1"
@@ -1968,8 +2119,8 @@ def _report_mgmt(result: MgmtAddressResult, platform: str | None = None) -> None
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
-            runner=run_command, verbose: bool = False, lan=None,
-            emit_advisory: bool = True) -> None:
+            inventory: bool = False, runner=run_command, verbose: bool = False,
+            lan=None, emit_advisory: bool = True) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
         _diag(cfg, f"starting check {check_id}: {title}")
         try:
@@ -1989,7 +2140,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
     _diag(cfg, f"gateway={cfg.gateway} dns={','.join(cfg.dns_servers)} "
                f"domain={cfg.domain} timeout={cfg.timeout} "
                f"switches={len(cfg.switches)} sample={sample} "
-               f"quick={quick} hardening={hardening}")
+               f"quick={quick} hardening={hardening} inventory={inventory}")
     _diag(cfg, "snmp_community=" + ("set" if cfg.snmp_community else "not set"))
 
     if lan is None:
@@ -1998,7 +2149,73 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
     _diag(cfg, f"lan_interface={lan.name} ({lan.primary_ip})" if lan
                else "lan_interface=none")
 
+    def _mgmt_gate(check_id: int, title: str) -> bool:
+        """True when the transient switch-management address is usable."""
+        mgmt = ensure_mgmt_address(cfg, lan)
+        if emit_advisory:
+            _report_mgmt(mgmt)
+        if lan is None or mgmt.detail == "present":
+            return True
+        assert mgmt.command is not None
+        cmd = format_command(mgmt.command)
+        if sys.platform.startswith("win"):
+            fix = f"Run as Administrator, then run netcheck again: {cmd}"
+        else:
+            fix = f"Add it, then run netcheck again: sudo {cmd}"
+        reporter.add(CheckResult(
+            check_id, title, Status.WARN,
+            detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
+            likely_cause="The laptop has no address on the switch-management LAN.",
+            suggested_fix=fix))
+        return False
+
     try:
+        # Opt-in checks (8 inventory, 9 hardening, 10 thresholds) run alone:
+        # when one is requested, the default 1-7 suite is skipped entirely.
+        if inventory or hardening or sample is not None:
+            if inventory:
+                first_id, first_title = 8, "Device inventory"
+            elif hardening:
+                first_id, first_title = 9, "Hardening audit"
+            else:
+                first_id, first_title = 10, "Storm thresholds"
+            if not _mgmt_gate(first_id, first_title):
+                return
+
+            measured: dict[str, dict] = {}
+
+            def _measure() -> None:
+                measured.update(measure_storm_threshold(
+                    cfg, sample_seconds=sample, source=source_for("10.90.90.90")))
+
+            if inventory:
+                local_macs = read_interface_macs(lan.name) if lan else set()
+
+                def _inventory_optin() -> None:
+                    reporter.add(check_device_inventory(
+                        cfg, [], source=source_for("10.90.90.90"),
+                        local_macs=local_macs))
+
+                _run_check(8, "Device inventory", _inventory_optin)
+
+            if hardening:
+                def _hardening() -> None:
+                    if sample is not None and not measured:
+                        _measure()
+                    reporter.add(check_hardening(cfg, measured=measured,
+                                                 source=source_for("10.90.90.90")))
+
+                _run_check(9, "Hardening audit", _hardening)
+
+            if sample is not None:
+                def _thresholds() -> None:
+                    if not measured:
+                        _measure()
+                    reporter.add(format_threshold_samples(measured))
+
+                _run_check(10, "Storm thresholds", _thresholds)
+            return
+
         layer_ping = lambda host, **kw: ping(host, runner=runner,  # noqa: E731
                                              source=source_for(host), **kw)
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
@@ -2009,67 +2226,24 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                          ping_fn=layer_ping, query_fn=layer_query)
         if quick:
             return
-
-        mgmt = ensure_mgmt_address(cfg, lan)
-        if emit_advisory:
-            _report_mgmt(mgmt)
-        if lan is not None and mgmt.detail != "present":
-            assert mgmt.command is not None
-            cmd = format_command(mgmt.command)
-            if sys.platform.startswith("win"):
-                fix = f"Run as Administrator, then run netcheck again: {cmd}"
-            else:
-                fix = f"Add it, then run netcheck again: sudo {cmd}"
-            reporter.add(CheckResult(
-                5, "Switches", Status.WARN,
-                detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
-                likely_cause="The laptop has no address on the switch-management LAN.",
-                suggested_fix=fix))
+        if not _mgmt_gate(5, "Switches"):
             return
 
         _run_check(5, "Switches",
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
-        rogue_macs: list[str] = []
-
         def _rogue() -> None:
-            result, macs = check_rogue_dhcp(cfg, iface=lan.name if lan else None)
+            result, _macs = check_rogue_dhcp(cfg, iface=lan.name if lan else None)
             reporter.add(result)
-            rogue_macs.extend(macs)
 
         _run_check(6, "Rogue DHCP", _rogue)
-
-        def _inventory() -> None:
-            reporter.add(check_device_inventory(
-                cfg, rogue_macs, source=source_for("10.90.90.90")))
-
-        _run_check(7, "Device inventory", _inventory)
 
         def _storm() -> None:
             gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
                                 runner=runner, source=source_for(cfg.gateway))
             reporter.add(check_storm_hints(cfg, gateway_ping))
 
-        _run_check(8, "Loop/storm hints", _storm)
-
-        if hardening:
-            def _hardening() -> None:
-                measured = (measure_storm_threshold(
-                                cfg, sample_seconds=sample,
-                                source=source_for("10.90.90.90"))
-                            if sample is not None else {})
-                reporter.add(check_hardening(cfg, measured=measured,
-                                             source=source_for("10.90.90.90")))
-
-            _run_check(9, "Hardening audit", _hardening)
-
-        if sample is not None:
-            def _sample_only() -> None:
-                measured = measure_storm_threshold(
-                    cfg, sample_seconds=sample,
-                    source=source_for("10.90.90.90"))
-                reporter.add(format_threshold_samples(measured))
-            _run_check(10, "Storm thresholds", _sample_only)
+        _run_check(7, "Loop/storm hints", _storm)
     except Exception as exc:  # noqa: BLE001 - last-resort guard
         if verbose:
             import traceback

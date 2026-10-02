@@ -40,6 +40,25 @@ class TestLayerChecks(unittest.TestCase):
         self.assertIs(result.status, Status.FAIL)
         self.assertIn("ISP DNS", result.likely_cause or "")
 
+    def test_dns_detail_lists_each_server_on_its_own_line(self):
+        def q(server, name, **kw):
+            return True, 5.0, ["93.184.216.34"]
+        result = check_dns(Config(), query_fn=q)
+        lines = result.detail.splitlines()
+        self.assertEqual(len(lines), 4)
+        for line in lines:
+            self.assertIn(": ", line)
+
+    def test_internet_detail_lists_each_ip(self):
+        def one(host, **kw):
+            ok = host == "1.1.1.1"
+            return PingResult(host=host, transmitted=4, received=4 if ok else 0,
+                              loss_pct=0.0 if ok else 100.0)
+        result = check_internet(Config(), ping_fn=one)
+        self.assertIn("1.1.1.1: reply", result.detail)
+        self.assertIn("8.8.8.8: no reply", result.detail)
+        self.assertIn("reachable: 1.1.1.1", result.detail)
+
 
 def ok_local():
     return LocalConfig(ip="192.168.1.50", gateway="192.168.1.1", dns=["1.1.1.1"])

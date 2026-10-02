@@ -15,6 +15,17 @@ write path is the explicit ``--remove-mgmt-ip`` maintenance flag. See USAGE.md
 for the operator guide.
 """
 
+# --- Contents ---------------------------------------------------------------
+#   Types and constants        Status, CheckResult, Reporter
+#   Configuration              Config, load_config, uplink port helpers
+#   BER + SNMP                 encoding/decoding, SnmpClient
+#   Values and identifiers     OUI vendor lookup, result codes
+#   Shell + interfaces         run_command, interface parsing, LAN selection
+#   Checks 1-10                layer checks, fabric checks, hardening, sampling
+#   Device inventory           FDB walk, trunk detection, attribution
+#   CLI                        build_parser, main, run_all
+# ---------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import argparse
@@ -39,6 +50,7 @@ from dataclasses import dataclass, field
 __version__ = "0.6.0"
 
 
+# --- Types and constants ----------------------------------------------------
 class Status(enum.Enum):
     PASS = "PASS"
     WARN = "WARN"
@@ -172,6 +184,7 @@ def _positive_float(text: str) -> float:
     return value
 
 
+# --- CLI --------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="netcheck", description=__doc__)
     parser.add_argument("--version", action="version", version=f"netcheck {__version__}")
@@ -260,9 +273,11 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(reporter.render(color=False) + "\n")
     return reporter.exit_code()
 
+
 _DEFAULT_SWITCHES = {f"dlink{i}": f"10.90.90.{89 + i}" for i in range(1, 6)}
 
 
+# --- Configuration ----------------------------------------------------------
 @dataclass
 class Config:
     switches: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_SWITCHES))
@@ -410,6 +425,7 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
     return cfg
 
 
+# --- BER + SNMP -------------------------------------------------------------
 def ber_encode_length(n: int) -> bytes:
     if n < 0x80:
         return bytes([n])
@@ -497,6 +513,7 @@ def ber_decode_oid(value: bytes) -> str:
                 break
         parts.append(n)
     return ".".join(str(p) for p in parts)
+
 
 TAG_INTEGER = 0x02
 TAG_OCTET = 0x04
@@ -715,12 +732,15 @@ OUI_TABLE: dict[str, str] = {
 }
 
 
+# --- Values and identifiers -------------------------------------------------
 def lookup_vendor(mac: str) -> str | None:
     normalized = mac.replace(":", "").replace("-", "").replace(".", "").upper()
     if len(normalized) < 6:
         return None
     return OUI_TABLE.get(normalized[:6])
 
+
+# --- Shell + interfaces -----------------------------------------------------
 def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
@@ -980,6 +1000,7 @@ def ping(host: str, count: int = 10, timeout: float = 3.0,
     _, out, _ = runner(ping_argv(host, count, source=source),
                        timeout=count * timeout + 5)
     return parse_ping_output(host, out)
+
 
 def build_dns_query(name: str, txid: int) -> bytes:
     header = struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0)
@@ -1297,6 +1318,7 @@ def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
                        suggested_fix="Check the gateway/uplink; try public DNS 1.1.1.1.")
 
 
+# --- Checks 1-10 ------------------------------------------------------------
 def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
                      ping_fn=ping, query_fn=dns_query) -> None:
     if local_fn is None:
@@ -1626,6 +1648,7 @@ def _trunk_ports(devs: Devicelist, switch: str, configured: set[int],
     return set(configured) | heavy
 
 
+# --- Device inventory -------------------------------------------------------
 def collect_devices(cfg: Config, client_factory=SnmpClient,
                     source: str | None = None) -> Devicelist:
     result = Devicelist()

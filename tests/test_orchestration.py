@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import unittest
 
 import netcheck
@@ -263,6 +264,74 @@ class TestOrchestration(unittest.TestCase):
         check5 = next(r for r in reporter.results if r.id == 5)
         self.assertIs(check5.status, netcheck.Status.WARN)
         self.assertIn("not run", check5.detail)
+
+    def test_gate_suggested_fix_embeds_remediation_command(self):
+        lan = netcheck.LanInterface(
+            "eth0", "192.168.1.50", [netcheck.InterfaceAddr("192.168.1.50", 24)])
+        reporter = netcheck.Reporter(color=False)
+        orig_resolve = netcheck.resolve_lan_interface
+        netcheck.resolve_lan_interface = lambda *a, **k: lan
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                netcheck.run_all(netcheck.Config(), reporter,
+                                 runner=lambda *a, **k: (0, "", ""),
+                                 emit_advisory=False)
+        finally:
+            netcheck.resolve_lan_interface = orig_resolve
+        check5 = next(r for r in reporter.results if r.id == 5)
+        self.assertIn("ip addr replace", check5.suggested_fix)
+        self.assertIn("10.90.90.100/24", check5.suggested_fix)
+        self.assertIn("eth0", check5.suggested_fix)
+        self.assertNotIn("sudo", stdout.getvalue())
+
+    def test_json_stdout_remains_valid_when_gate_fires(self):
+        lan = netcheck.LanInterface(
+            "eth0", "192.168.1.50", [netcheck.InterfaceAddr("192.168.1.50", 24)])
+        orig = {name: getattr(netcheck, name) for name in (
+            "load_config", "resolve_lan_interface", "run_layer_checks")}
+
+        def layer(cfg, rep, **k):
+            for i in (1, 2, 3, 4):
+                rep.add(netcheck.CheckResult(i, f"c{i}", netcheck.Status.PASS))
+
+        netcheck.load_config = lambda *a, **k: netcheck.Config()
+        netcheck.resolve_lan_interface = lambda *a, **k: lan
+        netcheck.run_layer_checks = layer
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                netcheck.main(["--json"])
+        finally:
+            for name, fn in orig.items():
+                setattr(netcheck, name, fn)
+        out = stdout.getvalue()
+        self.assertTrue(out.lstrip().startswith("{"))
+        data = json.loads(out)
+        check5 = next(c for c in data["checks"] if c["id"] == 5)
+        self.assertIn("ip addr replace", check5["suggested_fix"])
+
+    def test_report_mgmt_os_wording(self):
+        posix_result = netcheck.MgmtAddressResult(
+            False, "10.90.90.100", "eth0",
+            netcheck.mgmt_add_argv("eth0", "10.90.90.100", platform="linux"),
+            "missing")
+        posix = io.StringIO()
+        with contextlib.redirect_stdout(posix):
+            netcheck._report_mgmt(posix_result, platform="linux")
+        self.assertIn("sudo ip addr replace 10.90.90.100/24 dev eth0",
+                      posix.getvalue())
+
+        win_result = netcheck.MgmtAddressResult(
+            False, "10.90.90.100", "Ethernet",
+            netcheck.mgmt_add_argv("Ethernet", "10.90.90.100", platform="win32"),
+            "missing")
+        win = io.StringIO()
+        with contextlib.redirect_stdout(win):
+            netcheck._report_mgmt(win_result, platform="win32")
+        self.assertIn("run as Administrator", win.getvalue())
+        self.assertIn("netsh", win.getvalue())
+        self.assertIn("10.90.90.100", win.getvalue())
 
     def test_run_all_runs_checks_in_numeric_order(self):
         lan = netcheck.LanInterface(

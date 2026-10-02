@@ -673,8 +673,8 @@ lines. **Exit codes:** `0` = clean, `1` = at least one `WARN`, `2` = at least on
 | 10 | Storm thresholds *(opt-in, `--sample SECONDS`)* | Samples per-switch storm counters and prints the recommended `64Kbps × N` | PASS: per-switch recommendation printed. WARN: no samples collected |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
-**Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, then the
-opt-in 10 (`--sample`) and 9 (`--hardening`), then 8, 7.
+**Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 7, 8, then
+the opt-in 9 (`--hardening`) and 10 (`--sample`).
 Check 7 always prints the full per-switch device table, but shows only end devices:
 FDB entries learned on `uplink_ports` (cascade/uplink ports) are hidden, and a MAC
 seen on more than one access port is listed once, on the least-populated port. Rows

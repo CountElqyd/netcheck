@@ -213,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
-                hardening=args.hardening, verbose=args.verbose)
+                hardening=args.hardening, verbose=args.verbose,
+                emit_advisory=not (args.json or args.quiet))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -1952,13 +1953,14 @@ def format_command(argv: list[str], platform: str | None = None) -> str:
     return shlex.join(argv)
 
 
-def _report_mgmt(result: MgmtAddressResult) -> None:
+def _report_mgmt(result: MgmtAddressResult, platform: str | None = None) -> None:
     if result.detail != "missing" or not result.command:
         return
-    command = format_command(result.command)
+    platform = platform or sys.platform
+    command = format_command(result.command, platform)
     print(f"add {result.address}/24 to {result.interface} for switch access, "
           "then re-run netcheck:")
-    if sys.platform.startswith("win"):
+    if platform.startswith("win"):
         print(f"  run as Administrator: {command}")
     else:
         print(f"  sudo {command}")
@@ -1966,7 +1968,8 @@ def _report_mgmt(result: MgmtAddressResult) -> None:
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
-            runner=run_command, verbose: bool = False, lan=None) -> None:
+            runner=run_command, verbose: bool = False, lan=None,
+            emit_advisory: bool = True) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
         _diag(cfg, f"starting check {check_id}: {title}")
         try:
@@ -2008,13 +2011,20 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             return
 
         mgmt = ensure_mgmt_address(cfg, lan)
-        _report_mgmt(mgmt)
+        if emit_advisory:
+            _report_mgmt(mgmt)
         if lan is not None and mgmt.detail != "present":
+            assert mgmt.command is not None
+            cmd = format_command(mgmt.command)
+            if sys.platform.startswith("win"):
+                fix = f"Run as Administrator, then run netcheck again: {cmd}"
+            else:
+                fix = f"Add it, then run netcheck again: sudo {cmd}"
             reporter.add(CheckResult(
                 5, "Switches", Status.WARN,
                 detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
                 likely_cause="The laptop has no address on the switch-management LAN.",
-                suggested_fix="Add the address shown above, then run netcheck again."))
+                suggested_fix=fix))
             return
 
         _run_check(5, "Switches",

@@ -1202,16 +1202,23 @@ class DhcpProbe:
     reason: str = ""
 
 
-def scapy_dhcp_discover(timeout: float = 5.0, cfg=None) -> DhcpProbe:
+def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
+                        iface: str | None = None) -> DhcpProbe:
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
         return DhcpProbe(None, "scapy not installed")
+    if iface is None:
+        try:
+            from scapy.all import conf
+            iface = conf.route.route("10.90.90.90")[0]
+        except Exception:  # noqa: BLE001 - scapy routing is best-effort
+            iface = None
     try:
         packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
                   / UDP(sport=68, dport=67) / BOOTP(op=1, chaddr=b"\x00" * 16)
                   / DHCP(options=[("message-type", "discover"), "end"]))
-        answered, _ = srp(packet, timeout=timeout, verbose=False)
+        answered, _ = srp(packet, timeout=timeout, verbose=False, iface=iface)
     except PermissionError:
         return DhcpProbe(None, "raw sockets denied (needs root or CAP_NET_RAW)")
     except OSError as exc:
@@ -1229,10 +1236,12 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None) -> DhcpProbe:
     return DhcpProbe(list(found.values()))
 
 
-def check_rogue_dhcp(cfg: Config, discover_fn=None) -> tuple[CheckResult, list[str]]:
+def check_rogue_dhcp(cfg: Config, discover_fn=None,
+                     iface: str | None = None) -> tuple[CheckResult, list[str]]:
     if discover_fn is None:
-        discover_fn = lambda cfg=None: scapy_dhcp_discover(cfg=cfg)
-    probe = discover_fn(cfg)
+        discover_fn = lambda cfg=None, iface=iface: scapy_dhcp_discover(
+            cfg=cfg, iface=iface)
+    probe = discover_fn(cfg, iface)
     if probe.responders is None:
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
                             detail=f"not tested: {probe.reason}",

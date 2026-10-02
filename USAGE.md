@@ -755,10 +755,10 @@ Unplug that device, then confirm DHCP Server Screening is enabled with
 Detection`) and with error/broadcast counters before declaring a storm. Trace the
 looped port, unplug the cable (or the looped unmanaged switch), then re-check.
 
-**A switch is unreachable (check 5 WARN).** The hint names the likely cascade
-port on dlink1 (`dlink2`→24, `dlink3`→25, `dlink4`→26, `dlink5`→27). Reseat that
-cable and confirm the management IP. `dlink1` unreachable points at the
-management path or switch 1 itself.
+**A switch is unreachable (check 5 WARN).** The hint names that switch's own
+uplink port(s) toward dlink1, taken from `uplink_ports`. Reseat that cable and
+confirm the management IP. `dlink1` unreachable points at the management path or
+switch 1 itself.
 
 **Hardening below baseline (check 9 WARN, with `--hardening`).** The detail lists
 every finding per switch with the recommended value. Apply §5 to the named

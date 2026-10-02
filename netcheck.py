@@ -1349,11 +1349,14 @@ def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
     if not down:
         return CheckResult(5, "Switches", Status.PASS,
                            detail=f"all {len(cfg.switches)} management IPs reachable")
-    cascade = {"dlink2": "24", "dlink3": "25", "dlink4": "26", "dlink5": "27"}
-    hints = [f"{name} unreachable (check cascade port {cascade[name]} on dlink1)"
-             for name in down if name in cascade]
-    if "dlink1" in down:
-        hints.append("dlink1 unreachable (management path or switch 1 problem)")
+    hints: list[str] = []
+    for name in down:
+        if name == "dlink1":
+            hints.append("dlink1 unreachable (management path or switch 1 problem)")
+            continue
+        ports = sorted(uplink_ports_for(cfg, name))
+        where = ", ".join(str(port) for port in ports) if ports else "its uplink"
+        hints.append(f"{name} unreachable (check its uplink port(s) {where} to dlink1)")
     return CheckResult(5, "Switches", Status.WARN, detail="\n".join(hints),
                        likely_cause="One or more switches are not answering management pings.",
                        suggested_fix="Reseat the cascade/uplink cable and confirm the mgmt IP.")

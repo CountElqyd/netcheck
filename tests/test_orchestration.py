@@ -1,6 +1,5 @@
 import contextlib
 import io
-import json
 import unittest
 
 import netcheck
@@ -229,11 +228,6 @@ class TestOrchestration(unittest.TestCase):
         self.assertIn("Traceback", stderr.getvalue())
         self.assertIn("storm boom", stderr.getvalue())
 
-    def test_parser_has_remove_mgmt_ip(self):
-        self.assertFalse(netcheck.build_parser().parse_args([]).remove_mgmt_ip)
-        self.assertTrue(
-            netcheck.build_parser().parse_args(["--remove-mgmt-ip"]).remove_mgmt_ip)
-
     def test_run_all_sources_pings_from_management_address(self):
         lan = netcheck.LanInterface(
             "eth0", "192.168.1.50",
@@ -258,6 +252,8 @@ class TestOrchestration(unittest.TestCase):
             netcheck.check_rogue_dhcp = orig_rogue
         pings = [a for a in seen if a and a[0] == "ping"]
         self.assertTrue(any("10.90.90.100" in a for a in pings))
+        self.assertIn("ip addr del", reporter.cleanup_command)
+        self.assertIn("10.90.90.100/24", reporter.cleanup_command)
 
     def test_run_all_stops_before_switch_checks_when_mgmt_missing(self):
         lan = netcheck.LanInterface(
@@ -296,32 +292,6 @@ class TestOrchestration(unittest.TestCase):
         self.assertIn("10.90.90.100/24", check5.command)
         self.assertIn("eth0", check5.command)
         self.assertNotIn("sudo", stdout.getvalue())
-
-    def test_json_stdout_remains_valid_when_gate_fires(self):
-        lan = netcheck.LanInterface(
-            "eth0", "192.168.1.50", [netcheck.InterfaceAddr("192.168.1.50", 24)])
-        orig = {name: getattr(netcheck, name) for name in (
-            "load_config", "resolve_lan_interface", "run_layer_checks")}
-
-        def layer(cfg, rep, **k):
-            for i in (1, 2, 3, 4):
-                rep.add(netcheck.CheckResult(i, f"c{i}", netcheck.Status.PASS))
-
-        netcheck.load_config = lambda *a, **k: netcheck.Config()
-        netcheck.resolve_lan_interface = lambda *a, **k: lan
-        netcheck.run_layer_checks = layer
-        stdout = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(stdout):
-                netcheck.main(["--json"])
-        finally:
-            for name, fn in orig.items():
-                setattr(netcheck, name, fn)
-        out = stdout.getvalue()
-        self.assertTrue(out.lstrip().startswith("{"))
-        data = json.loads(out)
-        check5 = next(c for c in data["checks"] if c["id"] == 5)
-        self.assertIn("ip addr replace", check5["command"])
 
     def test_report_mgmt_os_wording(self):
         posix_result = netcheck.MgmtAddressResult(
@@ -403,7 +373,7 @@ class TestOrchestration(unittest.TestCase):
         netcheck.resolve_lan_interface = lambda *a, **k: None
         try:
             with contextlib.redirect_stderr(stderr):
-                code = netcheck.main(["--remove-mgmt-ip"])
+                code = netcheck.main([])
         finally:
             netcheck.load_config = orig_load
             netcheck.resolve_lan_interface = orig_resolve
@@ -424,64 +394,6 @@ class TestOrchestration(unittest.TestCase):
             netcheck.resolve_lan_interface = orig_resolve
         self.assertEqual(code, 2)
         self.assertIn("invalid gateway", stderr.getvalue())
-
-    def test_main_remove_mgmt_ip_reports_removal(self):
-        present = netcheck.LanInterface(
-            "eth0", "192.168.1.50",
-            [netcheck.InterfaceAddr("192.168.1.50", 24),
-             netcheck.InterfaceAddr("10.90.90.100", 24)])
-        absent = netcheck.LanInterface(
-            "eth0", "192.168.1.50",
-            [netcheck.InterfaceAddr("192.168.1.50", 24)])
-        state = {"removed": False}
-        calls = []
-
-        def resolve(*a, **k):
-            return absent if state["removed"] else present
-
-        def remove(cfg, iface, **k):
-            calls.append(iface)
-            state["removed"] = True
-
-        orig_load = netcheck.load_config
-        orig_resolve = netcheck.resolve_lan_interface
-        orig_remove = netcheck.remove_mgmt_address
-        netcheck.load_config = lambda *a, **k: netcheck.Config()
-        netcheck.resolve_lan_interface = resolve
-        netcheck.remove_mgmt_address = remove
-        stdout = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(stdout):
-                code = netcheck.main(["--remove-mgmt-ip"])
-        finally:
-            netcheck.load_config = orig_load
-            netcheck.resolve_lan_interface = orig_resolve
-            netcheck.remove_mgmt_address = orig_remove
-        self.assertEqual(code, 0)
-        self.assertEqual(calls, ["eth0"])
-        self.assertIn("removed 10.90.90.100/24 from eth0", stdout.getvalue())
-
-    def test_main_remove_mgmt_ip_fails_when_address_still_present(self):
-        present = netcheck.LanInterface(
-            "eth0", "192.168.1.50",
-            [netcheck.InterfaceAddr("192.168.1.50", 24),
-             netcheck.InterfaceAddr("10.90.90.100", 24)])
-        orig_load = netcheck.load_config
-        orig_resolve = netcheck.resolve_lan_interface
-        orig_remove = netcheck.remove_mgmt_address
-        netcheck.load_config = lambda *a, **k: netcheck.Config()
-        netcheck.resolve_lan_interface = lambda *a, **k: present
-        netcheck.remove_mgmt_address = lambda *a, **k: None
-        stderr = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(stderr):
-                code = netcheck.main(["--remove-mgmt-ip"])
-        finally:
-            netcheck.load_config = orig_load
-            netcheck.resolve_lan_interface = orig_resolve
-            netcheck.remove_mgmt_address = orig_remove
-        self.assertEqual(code, 1)
-        self.assertIn("could not remove", stderr.getvalue())
 
     def test_verbose_marks_each_layer_check(self):
         reporter = netcheck.Reporter(color=False)

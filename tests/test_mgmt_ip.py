@@ -8,7 +8,6 @@ from netcheck import (
     format_command,
     mgmt_add_argv,
     mgmt_del_argv,
-    remove_mgmt_address,
 )
 
 
@@ -88,26 +87,6 @@ class TestEnsureMgmtAddress(unittest.TestCase):
         with self.assertRaises(ValueError):
             ensure_mgmt_address(Config(mgmt_address="8.8.8.8"),
                                 _lan("192.168.1.50"))
-
-    def test_remove_runs_del_argv(self):
-        calls = []
-        remove_mgmt_address(Config(), "eth0",
-                            runner=lambda *a, **k: calls.append(a) or (0, "", ""))
-        self.assertEqual(calls[0][0], ["ip", "addr", "del", "10.90.90.100/24",
-                                       "dev", "eth0"])
-
-    def test_remove_rejects_option_like_interface(self):
-        calls = []
-        with self.assertRaises(ValueError):
-            remove_mgmt_address(Config(), "-eth0",
-                                runner=lambda *a, **k: calls.append(a) or (0, "", ""))
-        self.assertEqual(calls, [])
-
-    def test_remove_swallows_invalid_mgmt_address(self):
-        calls = []
-        remove_mgmt_address(Config(mgmt_address="8.8.8.8"), "eth0",
-                            runner=lambda *a, **k: calls.append(a) or (0, "", ""))
-        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

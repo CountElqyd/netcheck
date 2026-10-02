@@ -25,7 +25,7 @@ class TestDhcp(unittest.TestCase):
         self.assertIn("via scapy", result.detail)
         self.assertNotIn("Trace the responder", result.suggested_fix)
         self.assertIn("{command}", result.suggested_fix)
-        self.assertEqual(result.command, "uv run --with scapy netcheck.py --inventory")
+        self.assertEqual(result.command, "uv run netcheck.py --inventory")
 
     def test_clean_passes_with_method(self):
         gw = RogueResponder("192.168.1.1", "00:1E:58:00:00:01", "D-Link")
@@ -42,7 +42,7 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.WARN)
         self.assertIn("not tested", result.detail)
         self.assertIn("scapy not installed", result.detail)
-        self.assertEqual(result.command, "uv run --with scapy netcheck.py")
+        self.assertEqual(result.command, "uv run netcheck.py")
         self.assertNotIn("uv run", result.suggested_fix)
 
     def test_no_responders_warns(self):

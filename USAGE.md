@@ -49,7 +49,7 @@ That is install (once) → clone → enter → run. If you already have **Python
 **Enable the rogue-DHCP probe (check 6) and SNMP extras:**
 
 ```bash
-uv run --with scapy netcheck.py   # + rogue-DHCP broadcast probe (needs admin/root)
+uv run netcheck.py   # + rogue-DHCP broadcast probe (needs admin/root)
 ```
 
 **Configure before a real run** (secrets stay out of git — the file is
@@ -253,8 +253,8 @@ stay connected and keeps the default route; force a specific NIC with
 
 Before checks 5–9, if that NIC has no `10.90.90.x` address, netcheck prints the
 exact command to add `10.90.90.100/24` as a secondary address and **stops before
-the switch checks**. Add the address, then run netcheck again.
-`--remove-mgmt-ip` removes a leftover transient address and exits.
+the switch checks**. Add the address, then run netcheck again. When the switch
+checks finish, the report footer prints the command to remove that address.
 
 To add it manually instead, use your OS (replace the interface/adapter name):
 
@@ -280,7 +280,7 @@ Verify with a ping to one switch management IP before running the tool.
 | Capability | Needed for | How |
 |---|---|---|
 | Raw sockets / admin | Rogue-DHCP probe (check 6) | Administrator (Windows) or root / `sudo` (Linux/macOS) |
-| `scapy` | Preferred rogue-DHCP probe | `pip install scapy`, or `uv run --with scapy netcheck.py` |
+| `scapy` | Rogue-DHCP probe (check 6) | Fetched by `uv run netcheck.py`; or `pip install scapy` for `python3 netcheck.py` |
 | `pysnmp` | SNMP v3 only | Optional; the built-in client speaks v1/v2c |
 
 On Linux/macOS, if you cannot run as root, grant the interpreter raw-socket
@@ -290,7 +290,7 @@ The exact check-6 invocations:
 
 ```bash
 # Linux / macOS: sudo strips uv from PATH, so re-inject it with env
-sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py
+sudo -E env "PATH=$PATH" uv run netcheck.py
 
 # Linux alternative: grant the capability once, then run normally (no sudo)
 sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"
@@ -298,7 +298,7 @@ sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"
 
 ```powershell
 # Windows: run PowerShell as Administrator, then run normally
-uv run --with scapy netcheck.py
+uv run netcheck.py
 ```
 
 Without raw-socket rights (or without `scapy`), check 6 reports `WARN: not tested`
@@ -683,8 +683,7 @@ winget install --id=astral-sh.uv
 Confirm it is on your PATH with `uv --version`, then:
 
 ```bash
-uv run netcheck.py                       # uv fetches a suitable Python
-uv run --with scapy netcheck.py          # + rogue-DHCP probe (see §3.4)
+uv run netcheck.py                       # uv fetches Python + scapy (rogue-DHCP probe)
 uv run --with pysnmp netcheck.py         # + SNMP v3
 ```
 
@@ -698,8 +697,8 @@ python3 netcheck.py                      # or: uv run netcheck.py
 Expect one `[PASS]`/`[WARN]`/`[FAIL]` line per check, with the detail wrapped on
 the following indented lines and any `Likely cause:` / `Suggested fix:` beneath.
 Long output wraps to the terminal width; set `COLUMNS` to control it. Use
-`--log` to keep a timestamped report, `--quiet` for just the summary line, or
-`--json` to pipe a structured report into other tools.
+`--log` to keep a timestamped report, or `--quiet` for just the summary line.
+Pasteable commands print in cyan; they are plain when piped or written to a log.
 
 ---
 
@@ -759,7 +758,7 @@ mismatch easy to explain.
 [FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
     Likely cause: A non-gateway DHCP server is handing out leases.
     Suggested fix: First, determine the device port with the command:
-    uv run --with scapy netcheck.py --inventory
+    uv run netcheck.py --inventory
     Then unplug the rogue device and check its setup.
 [PASS]  8. Device inventory - 139 devices on 5 switches
     dlink1
@@ -834,9 +833,7 @@ returned no rows; confirm SNMP is enabled.
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
 | `--verbose` | Print diagnostics to stderr: a config/platform preamble, per-check markers, and a Python traceback for any error — including handled degradations (SNMP, `scapy`, storm sampling) |
 | `--quiet` | Print only the one-line summary (hide per-check output) |
-| `--json` | Emit a machine-readable JSON report (`summary` + `checks`) instead of the human report |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY) |
-| `--remove-mgmt-ip` | Remove the transient switch-management address and exit — the only write path |
 | `--version` | Print the tool version and exit |
 
 ---
@@ -846,10 +843,11 @@ returned no rows; confirm SNMP is enabled.
 netcheck never changes this machine. It runs only diagnostics: pings, DNS
 queries, a read-only SNMP walk, and (with `--hardening`) read-only SNMP gets.
 It does not add or remove addresses, flush caches, renew leases, or modify DNS.
+There is no flag that writes anything.
 
-The single exception is the explicit `--remove-mgmt-ip` maintenance flag, which
-removes the transient `10.90.90.100/24` address if one is still present. Nothing
-else writes to the system, the switches, or the router.
+When the switch checks run, the report footer prints the exact command to remove
+the transient `10.90.90.100/24` address if you added it — you run it by hand.
+Nothing writes to the system, the switches, or the router.
 
 ---
 

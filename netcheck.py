@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["scapy>=2.5"]
 # ///
 """netcheck — read-only audit of a small wired office LAN.
 
@@ -10,9 +10,9 @@ gateway, internet-by-IP, DNS, switch reachability, rogue DHCP, and loop/storm
 hints (checks 1-7). Device inventory (8), the hardening audit (9), and storm
 threshold sampling (10) are opt-in and run alone.
 
-The tool is read-only: it only pings, queries DNS, and walks SNMP. The single
-write path is the explicit ``--remove-mgmt-ip`` maintenance flag. See USAGE.md
-for the operator guide.
+The tool is read-only: it only pings, queries DNS, and walks SNMP. It changes
+nothing on this machine, the switches, or the router. See USAGE.md for the
+operator guide.
 """
 
 # --- Contents ---------------------------------------------------------------
@@ -32,7 +32,6 @@ import argparse
 import configparser
 import enum
 import ipaddress
-import json
 import os
 import random
 import re
@@ -71,6 +70,7 @@ class CheckResult:
 
 
 _COLORS = {Status.PASS: "\033[32m", Status.WARN: "\033[33m", Status.FAIL: "\033[31m"}
+_CMD_COLOR = "\033[36m"
 _RESET = "\033[0m"
 _BODY_INDENT = "      "
 
@@ -81,11 +81,12 @@ def _semicolon_lines(value: str) -> str:
 
 
 class Reporter:
-    """Collect check results and render the human or JSON report."""
+    """Collect check results and render the human report."""
     def __init__(self, color: bool = True):
         """Start with an empty result list."""
         self.color = color
         self.results: list[CheckResult] = []
+        self.cleanup_command = ""
 
     def add(self, result: CheckResult) -> None:
         """Append one check result."""
@@ -102,27 +103,6 @@ class Reporter:
     def counts(self) -> dict:
         """Count results per status."""
         return {s: sum(1 for r in self.results if r.status is s) for s in Status}
-
-    def to_dict(self) -> dict:
-        """Return the report as a JSON-serializable dict."""
-        counts = self.counts()
-        return {
-            "version": __version__,
-            "exit_code": self.exit_code(),
-            "summary": {s.value: counts[s] for s in Status},
-            "checks": [
-                {
-                    "id": r.id,
-                    "title": r.title,
-                    "status": r.status.value,
-                    "detail": r.detail,
-                    "likely_cause": r.likely_cause,
-                    "suggested_fix": r.suggested_fix.replace("{command}", r.command),
-                    "command": r.command,
-                }
-                for r in self.results
-            ],
-        }
 
     def _wrap_block(self, value: str, width: int, initial_indent: str,
                     subsequent_indent: str,
@@ -143,7 +123,8 @@ class Reporter:
             first = False
         return lines
 
-    def _render_fix_with_command(self, value: str, command: str, width: int) -> list[str]:
+    def _render_fix_with_command(self, value: str, command: str, width: int,
+                                 use_color: bool) -> list[str]:
         """Render a suggested fix that embeds {command} as verbatim body lines."""
         pad = _BODY_INDENT
         initial = f"{pad}Suggested fix: "
@@ -153,7 +134,8 @@ class Reporter:
             if not raw.strip():
                 lines.append("")
             elif raw.strip() == "{command}":
-                lines.extend(f"{pad}{cmd}" for cmd in command.splitlines())
+                lines.extend(self._command_line(cmd, pad, use_color)
+                             for cmd in command.splitlines())
             else:
                 indent = initial if first else pad
                 cont = " " * len(initial) if first else pad
@@ -161,6 +143,11 @@ class Reporter:
                                            subsequent_indent=cont) or [""])
             first = False
         return lines
+
+    @staticmethod
+    def _command_line(cmd: str, pad: str, use_color: bool) -> str:
+        """Render a pasteable command line, optionally colored."""
+        return f"{pad}{_CMD_COLOR}{cmd}{_RESET}" if use_color else f"{pad}{cmd}"
 
     def _render_check(self, r: CheckResult, head: str, title_width: int,
                       width: int, use_color: bool) -> list[str]:
@@ -175,7 +162,8 @@ class Reporter:
                              ("Suggested fix", r.suggested_fix)):
             if value:
                 if label == "Suggested fix" and r.command and "{command}" in value:
-                    lines.extend(self._render_fix_with_command(value, r.command, width))
+                    lines.extend(self._render_fix_with_command(value, r.command, width,
+                                                               use_color))
                     continue
                 initial = f"{pad}{label}: "
                 indent = " " * len(initial)
@@ -184,7 +172,7 @@ class Reporter:
                                               subsequent_initial_indent=indent))
         if r.command and "{command}" not in r.suggested_fix:
             for cmd_line in r.command.splitlines():
-                lines.append(f"{pad}{cmd_line}")
+                lines.append(self._command_line(cmd_line, pad, use_color))
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:
@@ -213,6 +201,10 @@ class Reporter:
                 if any(r.id == 6 and r.status is Status.FAIL for r in self.results):
                     lines.append("Rogue DHCP found: run --inventory to find its switch "
                                  "port by MAC.")
+                if self.cleanup_command:
+                    lines.append("Remove the transient switch-management address when done:")
+                    lines.append(self._command_line(self.cleanup_command, _BODY_INDENT,
+                                                    use_color))
                 if not any(r.id in (8, 9, 10) for r in self.results):
                     lines.append("")
                     lines.append("Deeper opt-in checks:")
@@ -256,10 +248,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="disable ANSI color output")
     parser.add_argument("--quiet", action="store_true",
                         help="print only the summary line")
-    parser.add_argument("--json", action="store_true",
-                        help="emit machine-readable JSON instead of the report")
-    parser.add_argument("--remove-mgmt-ip", action="store_true",
-                        help="remove the transient switch-management address and exit")
     return parser
 
 
@@ -293,32 +281,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"invalid gateway {cfg.gateway!r}; expected an IPv4 address",
               file=sys.stderr)
         return 2
-    if args.remove_mgmt_ip:
-        lan = resolve_lan_interface(cfg)
-        if lan is None:
-            print("no wired LAN interface found", file=sys.stderr)
-            return 1
-        remove_mgmt_address(cfg, lan.name)
-        refreshed = resolve_lan_interface(cfg)
-        if refreshed is not None and _lan_has_mgmt(refreshed, cfg):
-            print(f"could not remove {cfg.mgmt_address}/24 from {lan.name}",
-                  file=sys.stderr)
-            return 1
-        print(f"removed {cfg.mgmt_address}/24 from {lan.name}")
-        return 0
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
                 hardening=args.hardening, inventory=args.inventory,
                 verbose=args.verbose,
-                emit_advisory=not (args.json or args.quiet))
+                emit_advisory=not args.quiet)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
-    if args.json:
-        print(json.dumps(reporter.to_dict(), indent=2, sort_keys=False))
-    else:
-        print(reporter.render(quiet=args.quiet))
+    print(reporter.render(quiet=args.quiet))
     if args.log:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         with open(_log_path(stamp), "w") as fh:
@@ -1592,7 +1564,7 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
                             likely_cause="The rogue-DHCP probe could not run.",
                             suggested_fix="Install scapy and grant raw-socket rights, "
                                           "then run elevated (root/Administrator):",
-                            command="uv run --with scapy netcheck.py"),
+                            command="uv run netcheck.py"),
                 [])
     responders = probe.responders
     if not responders:
@@ -1617,7 +1589,7 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
                         suggested_fix="First, determine the device port with the command:\n"
                                       "{command}\n"
                                       "Then unplug the rogue device and check its setup.",
-                        command="uv run --with scapy netcheck.py --inventory"),
+                        command="uv run netcheck.py --inventory"),
             [r.mac for r in rogues if r.mac])
 
 
@@ -2301,17 +2273,6 @@ def ensure_mgmt_address(cfg: Config, lan: LanInterface | None) -> MgmtAddressRes
                              mgmt_add_argv(lan.name, addr), "missing")
 
 
-def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
-    """Remove the management address from the interface."""
-    try:
-        addr = _validate_mgmt_address(cfg)
-    except ValueError:
-        return
-    if iface.startswith("-"):
-        raise ValueError(f"invalid interface name {iface!r}")
-    runner(mgmt_del_argv(iface, addr))
-
-
 def format_command(argv: list[str], platform: str | None = None) -> str:
     """Render an argv list for display (never for execution)."""
     platform = platform or sys.platform
@@ -2320,12 +2281,15 @@ def format_command(argv: list[str], platform: str | None = None) -> str:
     return shlex.join(argv)
 
 
-def _report_mgmt(result: MgmtAddressResult, platform: str | None = None) -> None:
+def _report_mgmt(result: MgmtAddressResult, platform: str | None = None,
+                 color: bool = False) -> None:
     """Print how to add the management address when it is missing."""
     if result.detail != "missing" or not result.command:
         return
     platform = platform or sys.platform
     command = format_command(result.command, platform)
+    if color:
+        command = f"{_CMD_COLOR}{command}{_RESET}"
     print(f"add {result.address}/24 to {result.interface} for switch access, "
           "then re-run netcheck:")
     if platform.startswith("win"):
@@ -2372,8 +2336,12 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         """True when the transient switch-management address is usable."""
         mgmt = ensure_mgmt_address(cfg, lan)
         if emit_advisory:
-            _report_mgmt(mgmt)
+            _report_mgmt(mgmt, color=reporter.color)
         if lan is None or mgmt.detail == "present":
+            if lan is not None and mgmt.detail == "present" and mgmt.address:
+                del_cmd = format_command(mgmt_del_argv(lan.name, mgmt.address))
+                reporter.cleanup_command = (del_cmd if sys.platform.startswith("win")
+                                            else f"sudo {del_cmd}")
             return True
         assert mgmt.command is not None
         cmd = format_command(mgmt.command)

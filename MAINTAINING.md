@@ -7,7 +7,7 @@ operator usage, see [`USAGE.md`](USAGE.md).
 
 ```
 netcheck/
-├── netcheck.py                     # the entire CLI (single file, stdlib only)
+├── netcheck.py                     # the entire CLI (single file; stdlib + scapy via PEP 723)
 ├── netcheck.ini.example            # config template (safe to commit)
 ├── README.md                       # project overview + quickstart
 ├── USAGE.md                        # operator guide
@@ -90,9 +90,9 @@ Recommended sequence for a version bump:
 
 ## Changing the tool
 
-- `netcheck.py` is the whole program; keep it single-file and standard-library
-  only. Optional features (scapy, pysnmp) are opt-in extras, never hard
-  dependencies.
-- Keep the tool **read-only** against switches and the router: no SNMP SET, no
-  CLI `config`/`save`, no router changes.
+- `netcheck.py` is the whole program; keep it single-file. The `python3` path is
+  standard-library only. The PEP 723 header declares `scapy` so `uv run` fetches
+  it for the check-6 probe; `pysnmp` stays a fully optional extra.
+- Keep the tool **read-only** against the machine, switches, and router: no SNMP
+  SET, no CLI `config`/`save`, no local address/cache/DNS changes.
 - New behavior needs tests under `tests/` and a docs update in `USAGE.md`.

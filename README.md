@@ -6,15 +6,16 @@ that cause intermittent outages: rogue DHCP servers, loops/broadcast storms, and
 (opt-in) the device inventory plus switch settings that drift below a hardening
 baseline.
 
-> **Read-only guarantee.** `netcheck` never changes the ISP router and never
-> writes switch configuration (no SNMP SET, no CLI `config`/`save`). It only reads
-> switch state. Every change it suggests is applied **by you, by hand, in the
-> switch web UI.**
+> **Read-only guarantee.** `netcheck` changes nothing: not this machine, not the
+> ISP router, not the switch configuration (no SNMP SET, no CLI `config`/`save`).
+> It only reads state and pings. Every change it suggests is applied **by you, by
+> hand.**
 
-It runs on Windows, Linux, and macOS; is standard-library only (Python 3.10+);
-needs no installation; and prints one `PASS`/`WARN`/`FAIL` line per check with a
-likely cause and a suggested fix. The default run is checks 1–7; device inventory
-(8), hardening audit (9), and storm sampling (10) are **opt-in**.
+It runs on Windows, Linux, and macOS (Python 3.10+). `python3 netcheck.py` needs
+no third-party packages; `uv run netcheck.py` fetches `scapy` automatically for
+the check-6 rogue-DHCP probe. It prints one `PASS`/`WARN`/`FAIL` line per check
+with a likely cause and a suggested fix. The default run is checks 1–7; device
+inventory (8), hardening audit (9), and storm sampling (10) are **opt-in**.
 
 ## Quickstart
 
@@ -95,16 +96,17 @@ cp netcheck.ini.example netcheck.ini    # set snmp_community for checks 8-9
 ### 5. Run
 
 ```bash
-uv run --with scapy netcheck.py                 # default run, checks 1-7
-uv run --with scapy netcheck.py --inventory     # only check 8
-uv run --with scapy netcheck.py --hardening     # only check 9
-uv run --with scapy netcheck.py --sample 300    # only check 10
+uv run netcheck.py                 # default run, checks 1-7
+uv run netcheck.py --inventory     # only check 8
+uv run netcheck.py --hardening     # only check 9
+uv run netcheck.py --sample 300    # only check 10
 ```
 
-`--with scapy` enables the rogue-DHCP probe (check 6). Without `scapy` or the
-needed rights, check 6 reports `WARN: not tested` and prints the exact command to
-enable it; run `uv run netcheck.py` to skip the probe. On Python 3.10+ you can use
-`python3 netcheck.py` instead of `uv run`.
+`uv run` installs `scapy` (declared in the script's PEP 723 header), so the
+check-6 rogue-DHCP probe runs by default. Without raw-socket rights, or if you run
+`python3 netcheck.py` without `pip install scapy`, check 6 reports
+`WARN: not tested` and prints the exact command to enable it. On Python 3.10+ you
+can use `python3 netcheck.py` instead of `uv run`.
 
 ### Check 6 (rogue DHCP) — exact command
 
@@ -113,7 +115,7 @@ one of these:
 
 ```bash
 # Linux / macOS: sudo strips uv from PATH, so re-inject it with env
-sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py
+sudo -E env "PATH=$PATH" uv run netcheck.py
 
 # Linux alternative: grant the Python binary raw-socket capability once,
 # then run normally (no sudo) afterward
@@ -122,7 +124,7 @@ sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"
 
 ```powershell
 # Windows: open PowerShell as Administrator, then run normally
-uv run --with scapy netcheck.py
+uv run netcheck.py
 ```
 
 If neither is set up, check 6 prints `WARN: not tested` with this same command in
@@ -168,6 +170,7 @@ Run the standard-library test suite before any change:
 python3 -m unittest discover -s tests -v
 ```
 
-Keep `netcheck.py` single-file and standard-library only; optional features
-(`scapy`, `pysnmp`) are opt-in extras, never hard dependencies. New behavior needs
-tests under `tests/` and a docs update in `USAGE.md`.
+Keep `netcheck.py` single-file. It stays standard-library for the `python3` path;
+`scapy` is declared in the PEP 723 header so `uv run` fetches it for the check-6
+probe, and `pysnmp` remains a fully optional extra. New behavior needs tests under
+`tests/` and a docs update in `USAGE.md`.

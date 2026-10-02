@@ -96,17 +96,8 @@ class TestReporter(unittest.TestCase):
         self.assertNotIn("Legend:", text)
         self.assertIn("Summary:", text)
 
-    def test_to_dict_schema(self):
-        r = Reporter(color=False)
-        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL, detail="x",
-                          likely_cause="c", suggested_fix="f"))
-        d = r.to_dict()
-        self.assertEqual(d["exit_code"], 2)
-        self.assertEqual(d["summary"]["FAIL"], 1)
-        self.assertEqual(len(d["checks"]), 1)
-        self.assertEqual(d["checks"][0]["status"], "FAIL")
-        self.assertEqual(d["checks"][0]["title"], "Rogue DHCP")
-        self.assertEqual(d["checks"][0]["suggested_fix"], "f")
+    def test_to_dict_removed(self):
+        self.assertFalse(hasattr(Reporter(color=False), "to_dict"))
 
     def test_long_detail_wraps(self):
         r = Reporter(color=False)
@@ -184,36 +175,51 @@ class TestReporter(unittest.TestCase):
         r.add(CheckResult(5, "Switches", Status.WARN, command="run me"))
         self.assertNotIn("run me", r.render(quiet=True))
 
-    def test_to_dict_includes_command(self):
-        r = Reporter(color=False)
-        r.add(CheckResult(5, "Switches", Status.WARN, command="run me"))
-        self.assertEqual(r.to_dict()["checks"][0]["command"], "run me")
-
     def test_placeholder_renders_command_between_prose(self):
         r = Reporter(color=False)
         r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
                           suggested_fix="First, find the port:\n{command}\nThen unplug.",
-                          command="uv run --with scapy netcheck.py --inventory"))
+                          command="uv run netcheck.py --inventory"))
         lines = r.render().splitlines()
         self.assertIn("      Suggested fix: First, find the port:", lines)
-        self.assertIn("      uv run --with scapy netcheck.py --inventory", lines)
+        self.assertIn("      uv run netcheck.py --inventory", lines)
         self.assertIn("      Then unplug.", lines)
 
     def test_placeholder_command_is_not_wrapped(self):
-        cmd = "uv run --with scapy netcheck.py --inventory " + "x" * 80
+        cmd = "uv run netcheck.py --inventory " + "x" * 80
         r = Reporter(color=False)
         r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
                           suggested_fix="Find it:\n{command}\nThen unplug.", command=cmd))
         self.assertIn("      " + cmd, r.render().splitlines())
 
-    def test_to_dict_substitutes_command_placeholder(self):
+    def test_command_is_colored_when_color_on(self):
+        cmd = "sudo ip addr del 10.90.90.100/24 dev eth0"
+        r = Reporter(color=True)
+        r.add(CheckResult(5, "Switches", Status.WARN, command=cmd))
+        text = r.render(color=True)
+        self.assertIn(f"\033[36m{cmd}\033[0m", text)
+
+    def test_command_is_plain_when_color_off(self):
+        cmd = "sudo ip addr del 10.90.90.100/24 dev eth0"
+        r = Reporter(color=True)
+        r.add(CheckResult(5, "Switches", Status.WARN, command=cmd))
+        text = r.render(color=False)
+        self.assertNotIn("\033", text)
+        self.assertIn("      " + cmd, text.splitlines())
+
+    def test_footer_prints_cleanup_command(self):
         r = Reporter(color=False)
-        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
-                          suggested_fix="run:\n{command}", command="do it"))
-        check = r.to_dict()["checks"][0]
-        self.assertNotIn("{command}", check["suggested_fix"])
-        self.assertIn("do it", check["suggested_fix"])
-        self.assertEqual(check["command"], "do it")
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        r.cleanup_command = "sudo ip addr del 10.90.90.100/24 dev eth0"
+        text = r.render()
+        self.assertIn("Remove the transient switch-management address when done:", text)
+        self.assertIn("      sudo ip addr del 10.90.90.100/24 dev eth0", text)
+
+    def test_footer_omits_cleanup_command_in_quiet(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        r.cleanup_command = "sudo ip addr del 10.90.90.100/24 dev eth0"
+        self.assertNotIn("ip addr del", r.render(quiet=True))
 
     def test_footer_describes_optin_checks(self):
         r = Reporter(color=False)

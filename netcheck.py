@@ -1002,6 +1002,7 @@ class LocalConfig:
     gateway: str | None = None
     dns: list[str] = field(default_factory=list)
     interface: str | None = None
+    default_route_interface: str | None = None
 
 
 def parse_ipconfig_windows(text: str) -> LocalConfig:
@@ -1050,47 +1051,84 @@ def parse_macos(route_text: str, dns_text: str, ifaddr: str) -> LocalConfig:
     return lc
 
 
-def detect_local_config(runner=run_command) -> LocalConfig:
+def read_dns_servers(runner=run_command) -> list[str]:
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
-        return parse_ipconfig_windows(out)
+        return parse_ipconfig_windows(out).dns
     if sys.platform == "darwin":
-        _, route, _ = runner(["route", "-n", "get", "default"])
-        _, dns, _ = runner(["scutil", "--dns"])
-        iface = None
-        m = re.search(r"interface:\s*(\S+)", route)
-        if m:
-            iface = m.group(1)
-        ifaddr = ""
-        if iface:
-            _, ifaddr, _ = runner(["ipconfig", "getifaddr", iface])
-        return parse_macos(route, dns, ifaddr)
-    _, route, _ = runner(["ip", "route"])
-    _, addr, _ = runner(["ip", "-4", "addr"])
-    resolv = ""
+        _, out, _ = runner(["scutil", "--dns"])
+        return re.findall(r"nameserver\[[^\]]+\]\s*:\s*([\d.]+)", out)
     try:
         with open("/etc/resolv.conf") as fh:
-            resolv = fh.read()
+            return re.findall(r"^nameserver\s+([\d.]+)", fh.read(), re.MULTILINE)
     except OSError:
-        pass
-    return parse_linux(route, addr, resolv)
+        return []
 
 
-def check_local_config(cfg: Config, local_fn=detect_local_config) -> CheckResult:
+def default_route_interface(runner=run_command) -> str | None:
+    if sys.platform.startswith("win"):
+        _, out, _ = runner(["ipconfig", "/all"])
+        for info in parse_windows_interfaces(out):
+            if info.gateway:
+                return info.name
+        return None
+    if sys.platform == "darwin":
+        _, out, _ = runner(["route", "-n", "get", "default"])
+    else:
+        _, out, _ = runner(["ip", "route"])
+    match = re.search(r"(?:interface:\s*(\S+))|(?:default\b.*\bdev\s+(\S+))", out)
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
+
+def detect_local_config(cfg: Config, runner=run_command, lan=None) -> LocalConfig:
+    if lan is None:
+        lan = resolve_lan_interface(cfg, runner)
+    if lan is None:
+        return LocalConfig()
+    lc = LocalConfig(interface=lan.name)
+    office = office_network(cfg)
+    for addr in lan.addrs:
+        try:
+            if ipaddress.ip_address(addr.ip) in office:
+                lc.ip = addr.ip
+                lc.mask = f"/{addr.prefix}"
+                lc.gateway = cfg.gateway
+                break
+        except ValueError:
+            continue
+    if lc.ip is None and lan.primary_ip:
+        lc.ip = lan.primary_ip
+    lc.dns = read_dns_servers(runner)
+    lc.default_route_interface = default_route_interface(runner)
+    return lc
+
+
+def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
+    if local_fn is None:
+        local_fn = lambda: detect_local_config(cfg)
     lc = local_fn()
-    detail = f"{lc.ip or 'no IP'} gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
+    prefix = f"{lc.interface} " if lc.interface else ""
+    detail = f"{prefix}{lc.ip or 'no IP'} {lc.mask or ''} " \
+             f"gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
+    if lc.default_route_interface and lc.interface \
+            and lc.default_route_interface != lc.interface:
+        detail += f"; default route via Wi-Fi ({lc.default_route_interface}); wired LAN checked"
     if not lc.ip:
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
-                           likely_cause="No IPv4 address on the active interface.",
-                           suggested_fix="Connect the cable/join Wi-Fi and renew DHCP.")
+                           likely_cause="No IPv4 address on the wired LAN interface.",
+                           suggested_fix="Plug in the LAN cable and renew DHCP on the wired NIC.")
     if lc.ip.startswith("169.254."):
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
                            likely_cause="APIPA address: DHCP did not answer.",
                            suggested_fix="Check the switch port/uplink, then renew the lease.")
-    if lc.gateway != cfg.gateway:
+    if not _ip_in_network(lc.ip, cfg.gateway, _OFFICE_PREFIX):
+        net = office_network(cfg)
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
-                           likely_cause=f"Gateway is not {cfg.gateway}.",
-                           suggested_fix=f"Set the default gateway to {cfg.gateway}.")
+                           likely_cause=f"No wired address on the office LAN ({net}).",
+                           suggested_fix="Plug in the LAN cable and renew DHCP on the "
+                                         "wired NIC; Wi-Fi does not satisfy this check.")
     if not lc.dns:
         return CheckResult(1, "Local config", Status.WARN, detail=detail,
                            likely_cause="No DNS servers configured.",
@@ -1159,8 +1197,10 @@ def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
                        suggested_fix="Check the gateway/uplink; try public DNS 1.1.1.1.")
 
 
-def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=detect_local_config,
+def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
                      ping_fn=ping, query_fn=dns_query) -> None:
+    if local_fn is None:
+        local_fn = lambda: detect_local_config(cfg)
     local = check_local_config(cfg, local_fn=local_fn)
     reporter.add(local)
     if local.status is Status.FAIL:
@@ -1883,7 +1923,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             server, name, timeout=kw.get("timeout", cfg.timeout))
         _diag(cfg, "checks 1-4: local config, gateway, internet, DNS")
         run_layer_checks(cfg, reporter,
-                         local_fn=lambda: detect_local_config(runner),
+                         local_fn=lambda: detect_local_config(cfg, runner=runner),
                          ping_fn=layer_ping, query_fn=layer_query)
         if quick:
             return

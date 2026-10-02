@@ -4,3 +4,4 @@ netcheck.ini
 netcheck-*.log
 SHA256SUMS
 .superpowers/
+.worktrees/

@@ -216,20 +216,21 @@ class TestFormatInventory(unittest.TestCase):
         self.assertIn(" 3 ", lines[0])
         self.assertIn(" 9 ", lines[1])
 
-    def test_groups_rows_by_switch_before_sorting_by_port(self):
+    def test_headers_per_switch_then_rows_sorted_by_port(self):
         mac_c = "00:1E:58:11:22:33"
         devs = Devicelist(devices={
             "dlink1": {MAC_A: 9, mac_c: 1},
             "dlink2": {MAC_B: 3},
         })
-        lines = [ln for ln in format_inventory(devs, []).splitlines() if "port" in ln]
-        self.assertEqual(len(lines), 3)
-        self.assertIn("dlink1", lines[0])
-        self.assertIn("dlink1", lines[1])
-        self.assertIn("dlink2", lines[2])
-        self.assertIn(" 1 ", lines[0])
-        self.assertIn(" 9 ", lines[1])
-        self.assertIn(" 3 ", lines[2])
+        lines = format_inventory(devs, []).splitlines()
+        headers = [ln.strip() for ln in lines
+                   if ln.startswith("    ") and "port" not in ln]
+        port_lines = [ln for ln in lines if "port" in ln]
+        self.assertEqual(headers, ["dlink1", "dlink2"])
+        self.assertEqual(len(port_lines), 3)
+        self.assertIn(" 1 ", port_lines[0])
+        self.assertIn(" 9 ", port_lines[1])
+        self.assertIn(" 3 ", port_lines[2])
 
     def test_includes_vendor(self):
         devs = Devicelist(devices={"dlink1": {"00:1E:58:11:22:33": 5}})

@@ -14,7 +14,7 @@ import shutil
 import sys
 import textwrap
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 import enum
@@ -78,23 +78,38 @@ class Reporter:
             ],
         }
 
+    def _wrap_block(self, value: str, width: int, initial_indent: str,
+                    subsequent_indent: str,
+                    subsequent_initial_indent: str | None = None) -> list[str]:
+        if subsequent_initial_indent is None:
+            subsequent_initial_indent = initial_indent
+        lines: list[str] = []
+        first = True
+        for raw in value.splitlines():
+            if not raw.strip():
+                lines.append("")
+            else:
+                indent = initial_indent if first else subsequent_initial_indent
+                lines.extend(textwrap.wrap(raw, width=width,
+                                           initial_indent=indent,
+                                           subsequent_indent=subsequent_indent) or [""])
+            first = False
+        return lines
+
     def _render_check(self, r: CheckResult, head: str, title_width: int,
                       width: int, use_color: bool) -> list[str]:
         plain_tag = f"[{r.status.value}]"
         tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}" if use_color else plain_tag
         lines = [f"{tag} {head:<{title_width}}".rstrip()]
         if r.detail:
-            lines.extend(textwrap.wrap(r.detail, width=width,
-                                       initial_indent="      ",
-                                       subsequent_indent="      ") or [""])
+            lines.extend(self._wrap_block(r.detail, width, "      ", "      "))
         for label, value in (("Likely cause", r.likely_cause),
                              ("Suggested fix", r.suggested_fix)):
             if value:
                 indent = " " * (5 + len(label) + 2)
-                lines.extend(textwrap.wrap(
-                    value, width=width,
-                    initial_indent=f"    {label}: ",
-                    subsequent_indent=indent))
+                lines.extend(self._wrap_block(value, width,
+                                              f"    {label}: ", indent,
+                                              subsequent_initial_indent=indent))
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:
@@ -138,7 +153,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quick", action="store_true", help="checks 1-4 only")
     parser.add_argument("--log", action="store_true", help="save a timestamped report")
     parser.add_argument("--config", default="netcheck.ini", help="path to an INI config file")
-    parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
     parser.add_argument("--sample", type=_positive_float, default=None, metavar="SECONDS",
                         help="sample storm counters and print per-switch threshold "
                              "recommendations (also feeds --hardening)")
@@ -199,8 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
-                hardening=args.hardening, allow_fix=not args.no_fix,
-                verbose=args.verbose)
+                hardening=args.hardening, verbose=args.verbose,
+                emit_advisory=not (args.json or args.quiet))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -686,6 +700,7 @@ def lookup_vendor(mac: str) -> str | None:
 
 
 import re
+import shlex
 import subprocess
 
 
@@ -1135,7 +1150,8 @@ def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
              f"gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
     if lc.default_route_interface and lc.interface \
             and lc.default_route_interface != lc.interface:
-        detail += f"; default route via Wi-Fi ({lc.default_route_interface}); wired LAN checked"
+        detail += (f"\ndefault route via Wi-Fi ({lc.default_route_interface})"
+                   "; wired LAN checked")
     if not lc.ip:
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
                            likely_cause="No IPv4 address on the wired LAN interface.",
@@ -1222,16 +1238,24 @@ def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
                      ping_fn=ping, query_fn=dns_query) -> None:
     if local_fn is None:
         local_fn = lambda: detect_local_config(cfg)
+    _diag(cfg, "starting check 1: Local config")
     local = check_local_config(cfg, local_fn=local_fn)
     reporter.add(local)
+    _diag(cfg, "check 1 done")
     if local.status is Status.FAIL:
         return
+    _diag(cfg, "starting check 2: Gateway")
     gateway = check_gateway(cfg, ping_fn=ping_fn)
     reporter.add(gateway)
+    _diag(cfg, "check 2 done")
     if gateway.status is Status.FAIL:
         return
+    _diag(cfg, "starting check 3: Internet by IP")
     reporter.add(check_internet(cfg, ping_fn=ping_fn))
+    _diag(cfg, "check 3 done")
+    _diag(cfg, "starting check 4: DNS")
     reporter.add(check_dns(cfg, query_fn=query_fn))
+    _diag(cfg, "check 4 done")
 
 
 def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
@@ -1245,7 +1269,7 @@ def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
              for name in down if name in cascade]
     if "dlink1" in down:
         hints.append("dlink1 unreachable (management path or switch 1 problem)")
-    return CheckResult(5, "Switches", Status.WARN, detail="; ".join(hints),
+    return CheckResult(5, "Switches", Status.WARN, detail="\n".join(hints),
                        likely_cause="One or more switches are not answering management pings.",
                        suggested_fix="Reseat the cascade/uplink cable and confirm the mgmt IP.")
 
@@ -1524,20 +1548,17 @@ def access_devices(devs: Devicelist, uplink_of) -> Devicelist:
 
 def format_inventory(devs: Devicelist, rogue_macs: list[str]) -> str:
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
-    rows: list[tuple[str, int, str]] = []
-    for switch, macs in devs.devices.items():
-        for mac, port in macs.items():
-            rows.append((switch, port, mac))
-    order = {name: i for i, name in enumerate(devs.devices)}
-    rows.sort(key=lambda r: (order[r[0]], r[1], r[2]))
-    switch_w = max((len(r[0]) for r in rows), default=0)
-    port_w = max((len(str(r[1])) for r in rows), default=0)
+    port_w = max((len(str(port)) for macs in devs.devices.values()
+                  for port in macs.values()), default=0)
     lines: list[str] = []
-    for switch, port, mac in rows:
-        vendor = lookup_vendor(mac) or ""
-        flag = "  ROGUE" if mac.upper() in rogue else ""
-        lines.append(f"    {switch:<{switch_w}}  port {port:>{port_w}}  "
-                     f"{mac}  {vendor}{flag}")
+    for switch, macs in devs.devices.items():
+        if not macs:
+            continue
+        lines.append(f"    {switch}")
+        for port, mac in sorted((p, m) for m, p in macs.items()):
+            vendor = lookup_vendor(mac) or ""
+            flag = "  ROGUE" if mac.upper() in rogue else ""
+            lines.append(f"        port {port:>{port_w}}  {mac}  {vendor}{flag}")
     lines.extend(f"    {err}" for err in devs.errors)
     return "\n".join(lines)
 
@@ -1570,7 +1591,7 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
     if hits:
         where = ", ".join(f"{switch} port {port}" for switch, port, _ in hits)
         return CheckResult(7, title, Status.FAIL,
-                           detail=f"{summary}; rogue on {where}\n{table}",
+                           detail=f"{summary}\nrogue on {where}\n{table}",
                            likely_cause="A non-gateway DHCP server is attached to the fabric.",
                            suggested_fix=f"Unplug the flagged device ({where}); enable DHCP "
                                          "Server Screening with 192.168.1.1 trusted.")
@@ -1751,7 +1772,7 @@ def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
     if not findings:
         return CheckResult(9, "Hardening audit", Status.PASS,
                            detail="all switches meet the baseline")
-    return CheckResult(9, "Hardening audit", Status.WARN, detail="; ".join(findings),
+    return CheckResult(9, "Hardening audit", Status.WARN, detail="\n".join(findings),
                        suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
                                      "RSTP, DHCP Server Screening). LBD and RSTP are "
                                      "mutually exclusive per port on DGS-1210: keep RSTP on "
@@ -1852,32 +1873,7 @@ def format_threshold_samples(measured: dict[str, dict]) -> CheckResult:
         kbps = measured[name].get("threshold", 0)
         lines.append(f"{name}: {kbps} Kbit/s (N={kbps_to_n(kbps)})")
     return CheckResult(10, "Storm thresholds", Status.PASS,
-                       detail="set Threshold (64Kbps x N): " + "; ".join(lines))
-
-
-from typing import TextIO
-
-
-def open_tty() -> TextIO | None:
-    if not sys.stdin.isatty():
-        return None
-    try:
-        return open("/dev/tty", "r+") if sys.platform != "win32" else open("CONIN$", "r+")
-    except OSError:
-        return None
-
-
-def prompt_yes_no(question: str, tty=None) -> bool:
-    stream = tty
-    if stream is None:
-        stream = open_tty()
-    if stream is None:
-        return False
-    if getattr(stream, "isatty", None) is not None and stream.isatty():
-        stream.write(question + " [y/N] ")
-        stream.flush()
-    answer = stream.readline()
-    return answer.strip().lower() in ("y", "yes")
+                       detail="set Threshold (64Kbps x N):\n" + "\n".join(lines))
 
 
 @dataclass
@@ -1927,9 +1923,7 @@ def _lan_has_mgmt(lan: LanInterface, cfg: Config) -> bool:
     return False
 
 
-def ensure_mgmt_address(cfg: Config, lan: LanInterface | None,
-                        allow_fix: bool = True, tty=None,
-                        runner=run_command) -> MgmtAddressResult:
+def ensure_mgmt_address(cfg: Config, lan: LanInterface | None) -> MgmtAddressResult:
     if lan is None:
         return MgmtAddressResult(False, detail="no wired LAN interface")
     addr = _validate_mgmt_address(cfg)
@@ -1937,17 +1931,8 @@ def ensure_mgmt_address(cfg: Config, lan: LanInterface | None,
         raise ValueError(f"invalid interface name {lan.name!r}")
     if _lan_has_mgmt(lan, cfg):
         return MgmtAddressResult(False, addr, lan.name, None, "present")
-    argv = mgmt_add_argv(lan.name, addr)
-    if not allow_fix:
-        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
-    question = f"Add {addr}/24 to {lan.name} for switch access?"
-    if not prompt_yes_no(question, tty=tty):
-        return MgmtAddressResult(False, addr, lan.name, argv, "declined")
-    runner(argv)
-    refreshed = resolve_lan_interface(cfg, runner=runner)
-    if refreshed is not None and _lan_has_mgmt(refreshed, cfg):
-        return MgmtAddressResult(True, addr, lan.name, argv, "added")
-    return MgmtAddressResult(False, addr, lan.name, argv, "could not add")
+    return MgmtAddressResult(False, addr, lan.name,
+                             mgmt_add_argv(lan.name, addr), "missing")
 
 
 def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
@@ -1960,57 +1945,33 @@ def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
     runner(mgmt_del_argv(iface, addr))
 
 
-def dns_servers(cfg: Config) -> tuple[str, str]:
-    return "1.1.1.1", "8.8.8.8"
+def format_command(argv: list[str], platform: str | None = None) -> str:
+    """Render an argv list for display (never for execution)."""
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
-def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
-                runner=run_command) -> list[str]:
-    applied: list[str] = []
-    if not allow_fix:
-        return applied
-    if prompt_yes_no("Flush the DNS cache?", tty=tty):
-        if sys.platform.startswith("win"):
-            runner(["ipconfig", "/flushdns"])
-        elif sys.platform == "darwin":
-            runner(["dscacheutil", "-flushcache"])
-            runner(["killall", "-HUP", "mDNSResponder"])
-        else:
-            runner(["resolvectl", "flush-caches"])
-        applied.append("flushed DNS cache")
-    if prompt_yes_no("Renew the DHCP lease?", tty=tty):
-        if sys.platform.startswith("win"):
-            runner(["ipconfig", "/renew"])
-        elif sys.platform == "darwin":
-            runner(["ipconfig", "set", "en0", "DHCP"])
-        else:
-            runner(["dhclient", "-r"])
-            runner(["dhclient"])
-        applied.append("renewed DHCP lease")
-    primary, secondary = dns_servers(cfg)
-    if prompt_yes_no(f"Set this PC's DNS to {primary}/{secondary}?", tty=tty):
-        applied.append(f"requested DNS change to {primary}/{secondary}")
-    return applied
-
-
-def _report_mgmt(result: MgmtAddressResult) -> None:
-    if result.added:
-        print(f"added {result.address}/24 to {result.interface} (removed on exit)")
+def _report_mgmt(result: MgmtAddressResult, platform: str | None = None) -> None:
+    if result.detail != "missing" or not result.command:
         return
-    if result.command and result.detail in ("declined", "could not add"):
-        command = " ".join(result.command)
-        if sys.platform.startswith("win"):
-            print(f"could not add {result.address}/24; run as Administrator: {command}")
-        else:
-            print(f"could not add {result.address}/24; run: sudo {command}")
+    platform = platform or sys.platform
+    command = format_command(result.command, platform)
+    print(f"add {result.address}/24 to {result.interface} for switch access, "
+          "then re-run netcheck:")
+    if platform.startswith("win"):
+        print(f"  run as Administrator: {command}")
+    else:
+        print(f"  sudo {command}")
 
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
-            allow_fix: bool = True, tty=None, runner=run_command,
-            verbose: bool = False, lan=None) -> None:
+            runner=run_command, verbose: bool = False, lan=None,
+            emit_advisory: bool = True) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
-        _diag(cfg, f"check {check_id}: {title}")
+        _diag(cfg, f"starting check {check_id}: {title}")
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - isolate each fabric check
@@ -2021,6 +1982,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                                      detail=f"check failed: {exc}",
                                      likely_cause="An unexpected error interrupted this check.",
                                      suggested_fix="Re-run with --verbose for details."))
+        _diag(cfg, f"check {check_id} done")
 
     _diag(cfg, f"netcheck {__version__} on {sys.platform}, "
                f"python {sys.version.split()[0]}")
@@ -2035,8 +1997,6 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
     source_for = lan.source_for if lan is not None else (lambda dst: None)
     _diag(cfg, f"lan_interface={lan.name} ({lan.primary_ip})" if lan
                else "lan_interface=none")
-    added_mgmt = False
-    mgmt_iface: str | None = None
 
     try:
         layer_ping = lambda host, **kw: ping(host, runner=runner,  # noqa: E731
@@ -2044,23 +2004,28 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
             server, name, timeout=kw.get("timeout", cfg.timeout),
             source=source_for(server))
-        _diag(cfg, "checks 1-4: local config, gateway, internet, DNS")
         run_layer_checks(cfg, reporter,
                          local_fn=lambda: detect_local_config(cfg, runner, lan=lan),
                          ping_fn=layer_ping, query_fn=layer_query)
         if quick:
             return
 
-        mgmt = ensure_mgmt_address(cfg, lan, allow_fix=allow_fix, tty=tty,
-                                   runner=runner)
-        added_mgmt = mgmt.added
-        mgmt_iface = mgmt.interface
-        _report_mgmt(mgmt)
-        if mgmt.added:
-            refreshed = resolve_lan_interface(cfg, runner)
-            if refreshed is not None:
-                lan = refreshed
-                source_for = lan.source_for
+        mgmt = ensure_mgmt_address(cfg, lan)
+        if emit_advisory:
+            _report_mgmt(mgmt)
+        if lan is not None and mgmt.detail != "present":
+            assert mgmt.command is not None
+            cmd = format_command(mgmt.command)
+            if sys.platform.startswith("win"):
+                fix = f"Run as Administrator, then run netcheck again: {cmd}"
+            else:
+                fix = f"Add it, then run netcheck again: sudo {cmd}"
+            reporter.add(CheckResult(
+                5, "Switches", Status.WARN,
+                detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
+                likely_cause="The laptop has no address on the switch-management LAN.",
+                suggested_fix=fix))
+            return
 
         _run_check(5, "Switches",
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
@@ -2074,13 +2039,18 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(6, "Rogue DHCP", _rogue)
 
-        if sample is not None:
-            def _sample_only() -> None:
-                measured = measure_storm_threshold(
-                    cfg, sample_seconds=sample,
-                    source=source_for("10.90.90.90"))
-                reporter.add(format_threshold_samples(measured))
-            _run_check(10, "Storm thresholds", _sample_only)
+        def _inventory() -> None:
+            reporter.add(check_device_inventory(
+                cfg, rogue_macs, source=source_for("10.90.90.90")))
+
+        _run_check(7, "Device inventory", _inventory)
+
+        def _storm() -> None:
+            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
+                                runner=runner, source=source_for(cfg.gateway))
+            reporter.add(check_storm_hints(cfg, gateway_ping))
+
+        _run_check(8, "Loop/storm hints", _storm)
 
         if hardening:
             def _hardening() -> None:
@@ -2093,36 +2063,20 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
             _run_check(9, "Hardening audit", _hardening)
 
-        def _storm() -> None:
-            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
-                                runner=runner, source=source_for(cfg.gateway))
-            reporter.add(check_storm_hints(cfg, gateway_ping))
-
-        _run_check(8, "Loop/storm hints", _storm)
-
-        def _inventory() -> None:
-            reporter.add(check_device_inventory(
-                cfg, rogue_macs, source=source_for("10.90.90.90")))
-
-        _run_check(7, "Device inventory", _inventory)
-
-        fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
-        if fixed:
-            reporter.add(CheckResult(99, "Fixes applied", Status.PASS,
-                                     detail="; ".join(fixed)))
-    except Exception as exc:  # noqa: BLE001 - last-resort guard (Phase A, fixes)
+        if sample is not None:
+            def _sample_only() -> None:
+                measured = measure_storm_threshold(
+                    cfg, sample_seconds=sample,
+                    source=source_for("10.90.90.90"))
+                reporter.add(format_threshold_samples(measured))
+            _run_check(10, "Storm thresholds", _sample_only)
+    except Exception as exc:  # noqa: BLE001 - last-resort guard
         if verbose:
             import traceback
             traceback.print_exc()
         reporter.add(CheckResult(98, "Internal error", Status.WARN, detail=str(exc),
                                  likely_cause="An unexpected error interrupted the checks.",
                                  suggested_fix="Re-run with --verbose for details."))
-    finally:
-        try:
-            if added_mgmt and mgmt_iface:
-                remove_mgmt_address(cfg, mgmt_iface, runner=runner)
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

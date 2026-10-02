@@ -1,12 +1,11 @@
-import io
 import unittest
-from unittest import mock
 
 from netcheck import (
     Config,
     InterfaceAddr,
     LanInterface,
     ensure_mgmt_address,
+    format_command,
     mgmt_add_argv,
     mgmt_del_argv,
     remove_mgmt_address,
@@ -43,59 +42,52 @@ class TestArgv(unittest.TestCase):
              "10.90.90.100"])
 
 
+class TestFormatCommand(unittest.TestCase):
+    def test_posix_default_has_no_quotes(self):
+        self.assertEqual(
+            format_command(["ifconfig", "en0", "alias", "10.90.90.100",
+                            "255.255.255.0"], platform="linux"),
+            "ifconfig en0 alias 10.90.90.100 255.255.255.0")
+
+    def test_posix_quotes_argument_with_space(self):
+        self.assertEqual(
+            format_command(["ip", "addr", "replace", "a b"], platform="linux"),
+            "ip addr replace 'a b'")
+
+    def test_windows_quotes_interface_with_spaces(self):
+        self.assertEqual(
+            format_command(["netsh", "interface", "ipv4", "add", "address",
+                            "Local Area Connection", "10.90.90.100",
+                            "255.255.255.0"], platform="win32"),
+            'netsh interface ipv4 add address "Local Area Connection" '
+            "10.90.90.100 255.255.255.0")
+
+
 class TestEnsureMgmtAddress(unittest.TestCase):
-    def test_present_does_not_prompt_or_run(self):
-        calls = []
+    def test_present_returns_present_and_no_command(self):
         result = ensure_mgmt_address(
-            Config(), _lan("192.168.1.50", "10.90.90.100"),
-            tty=io.StringIO("y\n"), runner=lambda *a, **k: calls.append(a) or (0, "", ""))
+            Config(), _lan("192.168.1.50", "10.90.90.100"))
         self.assertFalse(result.added)
-        self.assertEqual(calls, [])
+        self.assertEqual(result.detail, "present")
+        self.assertIsNone(result.command)
 
-    def test_missing_prompt_yes_adds_and_verifies(self):
-        added = _lan("192.168.1.50", "10.90.90.100")
-        with mock.patch("netcheck.resolve_lan_interface", return_value=added):
-            result = ensure_mgmt_address(
-                Config(), _lan("192.168.1.50"),
-                tty=io.StringIO("y\n"),
-                runner=lambda *a, **k: (0, "", ""))
-        self.assertTrue(result.added)
-        self.assertEqual(result.address, "10.90.90.100")
-
-    def test_permission_failure_returns_command(self):
-        with mock.patch("netcheck.resolve_lan_interface",
-                        return_value=_lan("192.168.1.50")):
-            result = ensure_mgmt_address(
-                Config(), _lan("192.168.1.50"),
-                tty=io.StringIO("y\n"),
-                runner=lambda *a, **k: (1, "", "Operation not permitted"))
+    def test_missing_returns_add_command_without_running(self):
+        result = ensure_mgmt_address(Config(), _lan("192.168.1.50"))
         self.assertFalse(result.added)
+        self.assertEqual(result.detail, "missing")
         self.assertEqual(result.command,
-                         ["ip", "addr", "replace", "10.90.90.100/24", "dev", "eth0"])
-
-    def test_declined_returns_command(self):
-        result = ensure_mgmt_address(
-            Config(), _lan("192.168.1.50"),
-            tty=io.StringIO("n\n"), runner=lambda *a, **k: (0, "", ""))
-        self.assertFalse(result.added)
-        self.assertIsNotNone(result.command)
-
-    def test_no_fix_returns_command(self):
-        result = ensure_mgmt_address(
-            Config(), _lan("192.168.1.50"), allow_fix=False,
-            tty=io.StringIO("y\n"), runner=lambda *a, **k: (0, "", ""))
-        self.assertFalse(result.added)
-        self.assertIsNotNone(result.command)
+                         ["ip", "addr", "replace", "10.90.90.100/24",
+                          "dev", "eth0"])
 
     def test_no_lan_is_a_no_op(self):
-        result = ensure_mgmt_address(Config(), None, tty=io.StringIO("y\n"))
+        result = ensure_mgmt_address(Config(), None)
         self.assertFalse(result.added)
         self.assertIsNone(result.command)
 
     def test_invalid_mgmt_address_raises(self):
         with self.assertRaises(ValueError):
-            ensure_mgmt_address(Config(mgmt_address="8.8.8.8"), _lan("192.168.1.50"),
-                                tty=io.StringIO("y\n"))
+            ensure_mgmt_address(Config(mgmt_address="8.8.8.8"),
+                                _lan("192.168.1.50"))
 
     def test_remove_runs_del_argv(self):
         calls = []

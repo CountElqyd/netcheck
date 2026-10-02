@@ -49,10 +49,9 @@ cd netcheck
 `192.168.1.x` address; checks 5–9 need a `10.90.90.x` address. netcheck
 auto-detects the wired NIC (the one holding `192.168.1.x` or `10.90.90.x`) —
 Wi-Fi can stay connected and keeps the default route. Before checks 5–9, if the
-`10.90.90.x` address is missing, netcheck prompts and adds `10.90.90.100/24` to
-that NIC, then **removes it when the run ends** (only if netcheck added it). If
-it cannot add the address it prints the exact command to run as
-root/Administrator and continues.
+`10.90.90.x` address is missing, netcheck prints the exact command to add
+`10.90.90.100/24` to that NIC and **stops before the switch checks**. Add the
+address, then run netcheck again.
 
 To set it up manually instead (or force the NIC), use `lan_interface` in
 `netcheck.ini` and run e.g. `sudo ip addr add 10.90.90.100/24 dev eth0`.
@@ -66,13 +65,13 @@ cp netcheck.ini.example netcheck.ini    # set snmp_community for the switch audi
 **4. Run every check**
 
 ```bash
-uv run --with scapy netcheck.py --no-fix
+uv run --with scapy netcheck.py
 ```
 
 `--with scapy` enables the rogue-DHCP probe (check 6) and needs admin/root. Without
 admin/root or `scapy`, check 6 reports `WARN: not tested`; run
-`uv run netcheck.py --no-fix` to skip it. On Python 3.10+ you can use
-`python3 netcheck.py --no-fix` instead.
+`uv run netcheck.py` to skip it. On Python 3.10+ you can use
+`python3 netcheck.py` instead.
 
 ## What it checks
 
@@ -96,7 +95,7 @@ playbooks, flags, and the manual hardening settings.
 ## Documentation
 
 - [`USAGE.md`](USAGE.md) — the full operator guide (prerequisites, first run,
-  interpreting output, playbooks, flags, optional fixes).
+  interpreting output, playbooks, flags, read-only guarantee).
 - [`MAINTAINING.md`](MAINTAINING.md) — the maintainer runbook (layout, tests,
   releasing).
 

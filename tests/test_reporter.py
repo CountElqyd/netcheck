@@ -115,6 +115,31 @@ class TestReporter(unittest.TestCase):
         self.assertTrue(all(len(ln) <= 100 for ln in lines))
         self.assertGreater(len([ln for ln in lines if ln.startswith("      ")]), 1)
 
+    def test_render_preserves_detail_newlines(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.PASS, detail="first\nsecond"))
+        lines = r.render().splitlines()
+        self.assertEqual(lines[1], "      first")
+        self.assertEqual(lines[2], "      second")
+
+    def test_render_indents_each_block_line(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(7, "Device inventory", Status.PASS,
+                          detail="2 end devices\ndlink1\n    port 5  AA:BB"))
+        text = r.render()
+        self.assertIn("\n      dlink1", text)
+        self.assertIn("\n          port 5  AA:BB", text)
+
+    def test_multiline_cause_labels_once_and_aligns(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.FAIL,
+                          likely_cause="first line\nsecond line"))
+        lines = r.render().splitlines()
+        causes = [ln for ln in lines if "Likely cause:" in ln]
+        self.assertEqual(len(causes), 1)
+        idx = lines.index("    Likely cause: first line")
+        self.assertEqual(lines[idx + 1], " " * 19 + "second line")
+
 
 if __name__ == "__main__":
     unittest.main()

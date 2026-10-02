@@ -176,7 +176,8 @@ def scapy_dhcp_discover(timeout=5.0, cfg=None, iface=None) -> DhcpProbe
 - Checks 7, 9, 10 pass `source=source_for("10.90.90.90")`. When the management
   address is absent, this is `primary_ip`; the switch/SNMP checks then fail or
   WARN as expected, which is the correct diagnostic outcome.
-- If `lan is None`, check 1 FAILs and short-circuits, so no fabric check runs.
+- If `lan is None`, check 1 FAILs, but checks 5–10 still run and simply FAIL or
+  WARN because no LAN is resolvable.
 
 ## 5. Check 1 semantics
 

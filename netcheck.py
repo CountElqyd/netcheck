@@ -177,12 +177,23 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(path=args.config)
     cfg.timeout = args.timeout
     cfg.verbose = args.verbose
+    try:
+        ipaddress.IPv4Address(cfg.gateway)
+    except ValueError:
+        print(f"invalid gateway {cfg.gateway!r}; expected an IPv4 address",
+              file=sys.stderr)
+        return 2
     if args.remove_mgmt_ip:
         lan = resolve_lan_interface(cfg)
         if lan is None:
             print("no wired LAN interface found", file=sys.stderr)
             return 1
         remove_mgmt_address(cfg, lan.name)
+        refreshed = resolve_lan_interface(cfg)
+        if refreshed is not None and _lan_has_mgmt(refreshed, cfg):
+            print(f"could not remove {cfg.mgmt_address}/24 from {lan.name}",
+                  file=sys.stderr)
+            return 1
         print(f"removed {cfg.mgmt_address}/24 from {lan.name}")
         return 0
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
@@ -2042,9 +2053,9 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         mgmt = ensure_mgmt_address(cfg, lan, allow_fix=allow_fix, tty=tty,
                                    runner=runner)
-        _report_mgmt(mgmt)
         added_mgmt = mgmt.added
         mgmt_iface = mgmt.interface
+        _report_mgmt(mgmt)
         if mgmt.added:
             refreshed = resolve_lan_interface(cfg, runner)
             if refreshed is not None:
@@ -2107,8 +2118,11 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                                  likely_cause="An unexpected error interrupted the checks.",
                                  suggested_fix="Re-run with --verbose for details."))
     finally:
-        if added_mgmt and mgmt_iface:
-            remove_mgmt_address(cfg, mgmt_iface, runner=runner)
+        try:
+            if added_mgmt and mgmt_iface:
+                remove_mgmt_address(cfg, mgmt_iface, runner=runner)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

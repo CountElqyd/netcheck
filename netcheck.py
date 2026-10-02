@@ -401,7 +401,6 @@ def uplink_ports_for(cfg, switch: str) -> set[int]:
     return cfg.uplink_ports_by_switch.get(switch, cfg.uplink_ports)
 
 
-
 def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -> Config:
     """Build a Config from the INI file, then environment overrides."""
     env = os.environ if env is None else env
@@ -2365,7 +2364,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                 cfg, sample_seconds=sample, source=source_for("10.90.90.90")))
 
         if inventory:
-            local_macs = read_interface_macs(lan.name) if lan else set()
+            local_macs = read_interface_macs(lan.name, runner) if lan else set()
 
             def _inventory_optin() -> None:
                 """Add the device-inventory result (check 8)."""

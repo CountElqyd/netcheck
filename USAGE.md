@@ -677,7 +677,7 @@ lines. **Exit codes:** `0` = clean, `1` = at least one `WARN`, `2` = at least on
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
 | 6 | Rogue DHCP | scapy broadcast discover (real NIC MAC + broadcast reply flag, one retry, 5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
 | 7 | Loop/storm hints | Gateway loss/jitter heuristics | WARN: loss >5% or jitter >30 ms. PASS: quiet |
-| 8 | Device inventory *(opt-in, `--inventory`)* | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch. `uplink_ports` plus auto-detected trunks are hidden | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder (only when the default run also ran check 6). WARN: SNMP not configured or no switch returned an FDB |
+| 8 | Device inventory *(opt-in, `--inventory`)* | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch. `uplink_ports` plus auto-detected trunks are hidden; the local host's own MAC is tagged `this host` | PASS: table produced. WARN: SNMP not configured or no switch returned an FDB |
 | 9 | Hardening audit *(opt-in, `--hardening`)* | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. WARN: findings, SNMP unavailable, or MIB not exposed |
 | 10 | Storm thresholds *(opt-in, `--sample SECONDS`)* | Samples per-switch storm counters and prints the recommended `64Kbps × N` | PASS: per-switch recommendation printed. WARN: no samples collected |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
@@ -688,16 +688,19 @@ then 5, 6, 7. The opt-in checks run **alone** and only when requested — 8
 when several are given. `--quick` (checks 1–4) applies to the default run only and
 is ignored when an opt-in flag is present.
 
+Because check 8 runs alone, it does not see check 6's rogue-DHCP result, so its
+table never carries `ROGUE` marks. To localize a rogue responder, use the MAC that
+check 6 prints (its IP, MAC, and vendor) and find that MAC in the check 8 table.
+
 Check 8 prints the full per-switch device table, but shows only end devices:
 FDB entries learned on `uplink_ports` (cascade/uplink ports) or on auto-detected
 trunk ports (any port learning many MACs — e.g. an inter-switch link not listed in
 `uplink_ports`) are hidden, as are all-zero and multicast/broadcast MACs. A MAC
 seen on more than one access port is attributed to its physical access port; if it
-still appears on several, the least-populated port wins. When the default run also
-ran check 6, rows for MACs confirmed as non-gateway DHCP responders are marked
-`ROGUE`. With `--verbose`, check 8 also prints each switch's raw FDB rows and the
-trunk ports it classified, which makes a "N physical vs M listed" mismatch easy to
-explain.
+still appears on several, the least-populated port wins. The local host's own wired
+NIC is tagged `this host`. With `--verbose`, check 8 also prints each switch's raw
+FDB rows and the trunk ports it classified, which makes a "N physical vs M listed"
+mismatch easy to explain.
 
 ### 7.2 Status meanings
 
@@ -712,18 +715,20 @@ explain.
 [PASS]  1. Local config   - 192.168.1.50 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
 [FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
     Likely cause: A non-gateway DHCP server is handing out leases.
-    Suggested fix: Find the responder in the device inventory (check 8) and unplug
-                   it; enable DHCP Server Screening (Security) with 192.168.1.1
-                   trusted.
-[FAIL]  8. Device inventory - 139 devices; rogue on dlink1 port 5
-    dlink1  port  5   AA:BB:CC:DD:EE:FF  TP-Link  ROGUE
-    dlink1  port 12   00:1E:58:11:22:33  D-Link
-    dlink2  port  3   3C:07:54:9A:BC:DE  Apple
+    Suggested fix: Find the responder's MAC in the device inventory (check 8)
+                   and unplug it; enable DHCP Server Screening (Security) with
+                   192.168.1.1 trusted.
+[PASS]  8. Device inventory - 139 devices on 5 switches
+    dlink1
+        port  5   AA:BB:CC:DD:EE:FF  TP-Link
+        port 12   00:1E:58:11:22:33  D-Link
+    dlink2
+        port  3   3C:07:54:9A:BC:DE  Apple
 [WARN]  9. Hardening audit - dlink1: Loopback Detection: disabled (recommended: enabled, recover time 0)
     Likely cause: -
     Suggested fix: Apply the baseline in USAGE.md.
 
-Summary: 1 PASS · 1 WARN · 2 FAIL  (exit code 2)
+Summary: 2 PASS · 1 WARN · 1 FAIL  (exit code 2)
 Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
 ```
 

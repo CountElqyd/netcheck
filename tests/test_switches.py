@@ -19,6 +19,12 @@ class TestSwitches(unittest.TestCase):
         good = lambda h, **k: PingResult(host=h, transmitted=2, received=2, loss_pct=0.0)
         self.assertIs(check_switches(Config(), ping_fn=good).status, Status.PASS)
 
+    def test_multiple_unreachable_are_newline_separated(self):
+        def all_down(host, **kw):
+            return PingResult(host=host, transmitted=2, received=0, loss_pct=100.0)
+        result = check_switches(Config(), ping_fn=all_down)
+        self.assertIn("\n", result.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

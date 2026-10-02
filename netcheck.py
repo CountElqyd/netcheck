@@ -1149,7 +1149,8 @@ def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
              f"gw {lc.gateway or 'none'} dns {','.join(lc.dns) or 'none'}"
     if lc.default_route_interface and lc.interface \
             and lc.default_route_interface != lc.interface:
-        detail += f"; default route via Wi-Fi ({lc.default_route_interface}); wired LAN checked"
+        detail += (f"\ndefault route via Wi-Fi ({lc.default_route_interface})"
+                   "; wired LAN checked")
     if not lc.ip:
         return CheckResult(1, "Local config", Status.FAIL, detail=detail,
                            likely_cause="No IPv4 address on the wired LAN interface.",
@@ -1267,7 +1268,7 @@ def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
              for name in down if name in cascade]
     if "dlink1" in down:
         hints.append("dlink1 unreachable (management path or switch 1 problem)")
-    return CheckResult(5, "Switches", Status.WARN, detail="; ".join(hints),
+    return CheckResult(5, "Switches", Status.WARN, detail="\n".join(hints),
                        likely_cause="One or more switches are not answering management pings.",
                        suggested_fix="Reseat the cascade/uplink cable and confirm the mgmt IP.")
 
@@ -1592,7 +1593,7 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
     if hits:
         where = ", ".join(f"{switch} port {port}" for switch, port, _ in hits)
         return CheckResult(7, title, Status.FAIL,
-                           detail=f"{summary}; rogue on {where}\n{table}",
+                           detail=f"{summary}\nrogue on {where}\n{table}",
                            likely_cause="A non-gateway DHCP server is attached to the fabric.",
                            suggested_fix=f"Unplug the flagged device ({where}); enable DHCP "
                                          "Server Screening with 192.168.1.1 trusted.")
@@ -1773,7 +1774,7 @@ def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
     if not findings:
         return CheckResult(9, "Hardening audit", Status.PASS,
                            detail="all switches meet the baseline")
-    return CheckResult(9, "Hardening audit", Status.WARN, detail="; ".join(findings),
+    return CheckResult(9, "Hardening audit", Status.WARN, detail="\n".join(findings),
                        suggested_fix="Apply the baseline in USAGE.md (LBD, Storm Control, "
                                      "RSTP, DHCP Server Screening). LBD and RSTP are "
                                      "mutually exclusive per port on DGS-1210: keep RSTP on "
@@ -1874,7 +1875,7 @@ def format_threshold_samples(measured: dict[str, dict]) -> CheckResult:
         kbps = measured[name].get("threshold", 0)
         lines.append(f"{name}: {kbps} Kbit/s (N={kbps_to_n(kbps)})")
     return CheckResult(10, "Storm thresholds", Status.PASS,
-                       detail="set Threshold (64Kbps x N): " + "; ".join(lines))
+                       detail="set Threshold (64Kbps x N):\n" + "\n".join(lines))
 
 
 @dataclass

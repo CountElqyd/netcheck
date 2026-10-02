@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import shutil
 import sys
@@ -217,6 +218,8 @@ class Config:
     uplink_ports_by_switch: dict[str, set[int]] = field(default_factory=dict)
     timeout: float = 3.0
     verbose: bool = False
+    mgmt_address: str = "10.90.90.100"
+    lan_interface: str | None = None
 
 
 _ENV_MAP = {
@@ -313,6 +316,8 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
             cfg.switch_user = section.get("switch_user", cfg.switch_user)
             cfg.switch_pass = section.get("switch_pass", cfg.switch_pass)
             cfg.domain = section.get("domain", cfg.domain)
+            cfg.mgmt_address = section.get("mgmt_address", cfg.mgmt_address)
+            cfg.lan_interface = section.get("lan_interface", cfg.lan_interface)
             cfg.storm_safety_factor = _to_int(section.get("storm_safety_factor",
                                                            cfg.storm_safety_factor),
                                               cfg.storm_safety_factor)
@@ -672,6 +677,180 @@ def ping_argv(host: str, count: int) -> list[str]:
     if sys.platform.startswith("win"):
         return ["ping", "-n", str(count), host]
     return ["ping", "-c", str(count), host]
+
+
+_MGMT_NETWORK = ipaddress.ip_network("10.90.90.0/24")
+_OFFICE_PREFIX = 24
+
+_LINUX_IFACE_RE = re.compile(
+    r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", re.MULTILINE)
+_MACOS_IFACE_RE = re.compile(r"^(\S+):\s+flags=.*$", re.MULTILINE)
+_MACOS_INET_RE = re.compile(
+    r"inet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+(0x[0-9a-fA-F]+)")
+_MACOS_SKIP = ("lo", "utun", "awdl", "llw", "bridge", "ap", "anpi")
+_WIN_ADAPTER_RE = re.compile(r"^[A-Za-z][^\r\n]*\badapter\s+(.+?):\s*$", re.MULTILINE)
+_WIN_IPV4_RE = re.compile(r"IPv4 Address[^:]*:\s*(\d+\.\d+\.\d+\.\d+)")
+_WIN_MASK_RE = re.compile(r"Subnet Mask[^:]*:\s*(\d+\.\d+\.\d+\.\d+)")
+_WIN_GW_RE = re.compile(r"Default Gateway[^:]*:\s*(\d+\.\d+\.\d+\.\d+)")
+_WIN_DESC_RE = re.compile(r"Description[^:]*:\s*(.+)")
+
+
+@dataclass
+class InterfaceAddr:
+    ip: str
+    prefix: int
+
+
+@dataclass
+class InterfaceInfo:
+    name: str
+    addrs: list[InterfaceAddr] = field(default_factory=list)
+    gateway: str | None = None
+
+
+@dataclass
+class LanInterface:
+    name: str
+    primary_ip: str
+    addrs: list[InterfaceAddr]
+
+    def source_for(self, dst: str) -> str:
+        for addr in self.addrs:
+            if _ip_in_network(dst, addr.ip, addr.prefix):
+                return addr.ip
+        return self.primary_ip
+
+
+def _ip_in_network(ip: str, net_ip: str, prefix: int) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(
+            f"{net_ip}/{prefix}", strict=False)
+    except ValueError:
+        return False
+
+
+def office_network(cfg: Config):
+    return ipaddress.ip_network(f"{cfg.gateway}/{_OFFICE_PREFIX}", strict=False)
+
+
+def _has_addr_in(info: InterfaceInfo, network) -> bool:
+    for addr in info.addrs:
+        try:
+            if ipaddress.ip_address(addr.ip) in network:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _prefix_from_mask(mask: str) -> int:
+    try:
+        return bin(int(ipaddress.IPv4Address(mask))).count("1")
+    except (ipaddress.AddressValueError, ValueError):
+        return 32
+
+
+def parse_linux_interfaces(text: str) -> list[InterfaceInfo]:
+    out: dict[str, InterfaceInfo] = {}
+    for name, ip, prefix in _LINUX_IFACE_RE.findall(text):
+        if name == "lo":
+            continue
+        info = out.setdefault(name, InterfaceInfo(name))
+        info.addrs.append(InterfaceAddr(ip, int(prefix)))
+    return list(out.values())
+
+
+def parse_macos_interfaces(text: str) -> list[InterfaceInfo]:
+    out: list[InterfaceInfo] = []
+    current: InterfaceInfo | None = None
+    for line in text.splitlines():
+        header = _MACOS_IFACE_RE.match(line)
+        if header:
+            name = header.group(1)
+            current = None if name.startswith(_MACOS_SKIP) else InterfaceInfo(name)
+            if current is not None:
+                out.append(current)
+            continue
+        if current is None:
+            continue
+        found = _MACOS_INET_RE.search(line)
+        if found:
+            current.addrs.append(
+                InterfaceAddr(found.group(1), bin(int(found.group(2), 16)).count("1")))
+    return out
+
+
+def parse_windows_interfaces(text: str) -> list[InterfaceInfo]:
+    out: list[InterfaceInfo] = []
+    matches = list(_WIN_ADAPTER_RE.finditer(text))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[match.end():end]
+        desc = _WIN_DESC_RE.search(block)
+        if desc and "loopback" in desc.group(1).lower():
+            continue
+        info = InterfaceInfo(match.group(1).strip())
+        ip = _WIN_IPV4_RE.search(block)
+        mask = _WIN_MASK_RE.search(block)
+        gateway = _WIN_GW_RE.search(block)
+        if ip:
+            info.addrs.append(InterfaceAddr(
+                ip.group(1), _prefix_from_mask(mask.group(1)) if mask else 32))
+        if gateway:
+            info.gateway = gateway.group(1)
+        out.append(info)
+    return out
+
+
+def iter_interfaces(runner=run_command) -> list[InterfaceInfo]:
+    if sys.platform.startswith("win"):
+        _, out, _ = runner(["ipconfig", "/all"])
+        return parse_windows_interfaces(out)
+    if sys.platform == "darwin":
+        _, out, _ = runner(["ifconfig", "-a"])
+        return parse_macos_interfaces(out)
+    _, out, _ = runner(["ip", "-4", "-o", "addr", "show"])
+    return parse_linux_interfaces(out)
+
+
+def resolve_lan_interface(cfg: Config, runner=run_command,
+                          interfaces: list[InterfaceInfo] | None = None
+                          ) -> LanInterface | None:
+    if interfaces is None:
+        interfaces = iter_interfaces(runner)
+    override = getattr(cfg, "lan_interface", None)
+    if override:
+        if override.startswith("-"):
+            return None
+        chosen = next((i for i in interfaces if i.name == override), None)
+        if chosen is None:
+            return None
+        return LanInterface(chosen.name, _primary_ip(chosen, office_network(cfg)),
+                            list(chosen.addrs))
+    office = office_network(cfg)
+    candidates = [i for i in interfaces
+                  if _has_addr_in(i, office) or _has_addr_in(i, _MGMT_NETWORK)]
+    if not candidates:
+        return None
+    office_ifaces = [i for i in candidates if _has_addr_in(i, office)]
+    pool = office_ifaces or candidates
+    if len(pool) > 1:
+        carrying = [i for i in pool if _has_addr_in(i, _MGMT_NETWORK)]
+        pool = carrying or pool
+    chosen = pool[0]
+    if len(office_ifaces) > 1:
+        _diag(cfg, f"multiple office-LAN interfaces; using {chosen.name}")
+    return LanInterface(chosen.name, _primary_ip(chosen, office), list(chosen.addrs))
+
+
+def _primary_ip(info: InterfaceInfo, office) -> str:
+    for addr in info.addrs:
+        try:
+            if ipaddress.ip_address(addr.ip) in office:
+                return addr.ip
+        except ValueError:
+            continue
+    return info.addrs[0].ip if info.addrs else ""
 
 
 @dataclass

@@ -104,6 +104,19 @@ class TestEnsureMgmtAddress(unittest.TestCase):
         self.assertEqual(calls[0][0], ["ip", "addr", "del", "10.90.90.100/24",
                                        "dev", "eth0"])
 
+    def test_remove_rejects_option_like_interface(self):
+        calls = []
+        with self.assertRaises(ValueError):
+            remove_mgmt_address(Config(), "-eth0",
+                                runner=lambda *a, **k: calls.append(a) or (0, "", ""))
+        self.assertEqual(calls, [])
+
+    def test_remove_swallows_invalid_mgmt_address(self):
+        calls = []
+        remove_mgmt_address(Config(mgmt_address="8.8.8.8"), "eth0",
+                            runner=lambda *a, **k: calls.append(a) or (0, "", ""))
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

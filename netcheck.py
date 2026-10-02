@@ -1934,6 +1934,8 @@ def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
         addr = _validate_mgmt_address(cfg)
     except ValueError:
         return
+    if iface.startswith("-"):
+        raise ValueError(f"invalid interface name {iface!r}")
     runner(mgmt_del_argv(iface, addr))
 
 

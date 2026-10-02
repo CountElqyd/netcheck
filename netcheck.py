@@ -52,6 +52,7 @@ __version__ = "0.6.0"
 
 # --- Types and constants ----------------------------------------------------
 class Status(enum.Enum):
+    """Outcome level for a check: PASS, WARN, or FAIL."""
     PASS = "PASS"
     WARN = "WARN"
     FAIL = "FAIL"
@@ -59,6 +60,7 @@ class Status(enum.Enum):
 
 @dataclass
 class CheckResult:
+    """One check's id, title, status, and optional operator guidance."""
     id: int
     title: str
     status: Status
@@ -73,18 +75,23 @@ _BODY_INDENT = "      "
 
 
 def _semicolon_lines(value: str) -> str:
+    """Expand '; '-joined detail text into one item per line."""
     return value.replace("; ", "\n")
 
 
 class Reporter:
+    """Collect check results and render the human or JSON report."""
     def __init__(self, color: bool = True):
+        """Start with an empty result list."""
         self.color = color
         self.results: list[CheckResult] = []
 
     def add(self, result: CheckResult) -> None:
+        """Append one check result."""
         self.results.append(result)
 
     def exit_code(self) -> int:
+        """Return 2 for any FAIL, 1 for any WARN, else 0."""
         if any(r.status is Status.FAIL for r in self.results):
             return 2
         if any(r.status is Status.WARN for r in self.results):
@@ -92,9 +99,11 @@ class Reporter:
         return 0
 
     def counts(self) -> dict:
+        """Count results per status."""
         return {s: sum(1 for r in self.results if r.status is s) for s in Status}
 
     def to_dict(self) -> dict:
+        """Return the report as a JSON-serializable dict."""
         counts = self.counts()
         return {
             "version": __version__,
@@ -116,6 +125,7 @@ class Reporter:
     def _wrap_block(self, value: str, width: int, initial_indent: str,
                     subsequent_indent: str,
                     subsequent_initial_indent: str | None = None) -> list[str]:
+        """Wrap each logical line to width, preserving blank lines."""
         if subsequent_initial_indent is None:
             subsequent_initial_indent = initial_indent
         lines: list[str] = []
@@ -133,6 +143,7 @@ class Reporter:
 
     def _render_check(self, r: CheckResult, head: str, title_width: int,
                       width: int, use_color: bool) -> list[str]:
+        """Render one check's tag, title, detail, and guidance."""
         plain_tag = f"[{r.status.value}]"
         tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}" if use_color else plain_tag
         lines = [f"{tag} {head:<{title_width}}".rstrip()]
@@ -150,6 +161,7 @@ class Reporter:
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:
+        """Render the full report, optionally without color or details."""
         use_color = self.color if color is None else color
         try:
             width = shutil.get_terminal_size((88, 24)).columns
@@ -175,6 +187,7 @@ class Reporter:
 
 
 def _positive_float(text: str) -> float:
+    """argparse type that parses a float and rejects values <= 0."""
     try:
         value = float(text)
     except ValueError:
@@ -186,6 +199,7 @@ def _positive_float(text: str) -> float:
 
 # --- CLI --------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(prog="netcheck", description=__doc__)
     parser.add_argument("--version", action="version", version=f"netcheck {__version__}")
     parser.add_argument("--quick", action="store_true", help="checks 1-4 only")
@@ -214,6 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _log_path(stamp: str) -> str:
+    """Return a timestamped log filename that does not yet exist."""
     path = f"netcheck-{stamp}.log"
     counter = 1
     while os.path.exists(path):
@@ -223,6 +238,7 @@ def _log_path(stamp: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse arguments, run the checks, and return the exit code."""
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
@@ -280,6 +296,7 @@ _DEFAULT_SWITCHES = {f"dlink{i}": f"10.90.90.{89 + i}" for i in range(1, 6)}
 # --- Configuration ----------------------------------------------------------
 @dataclass
 class Config:
+    """Runtime settings from defaults, INI file, environment, and CLI."""
     switches: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_SWITCHES))
     gateway: str = "192.168.1.1"
     dns_servers: list[str] = field(default_factory=lambda: ["58.71.2.8", "45.63.30.117"])
@@ -312,17 +329,20 @@ _ENV_MAP = {
 
 
 def _diag(cfg, message: str) -> None:
+    """Print a diagnostic line when verbose mode is enabled."""
     if getattr(cfg, "verbose", False):
         print(f"[verbose] {message}", file=sys.stderr)
 
 
 def _diag_exc(cfg) -> None:
+    """Print the active exception traceback in verbose mode."""
     if getattr(cfg, "verbose", False):
         import traceback
         traceback.print_exc()
 
 
 def _to_int(value, default):
+    """Coerce a value to int, falling back to default on failure."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -330,6 +350,7 @@ def _to_int(value, default):
 
 
 def _parse_switches(text):
+    """Parse 'name=ip,name=ip' text into a name->ip map."""
     result = {}
     for token in text.replace(" ", "").split(","):
         if "=" in token:
@@ -340,6 +361,7 @@ def _parse_switches(text):
 
 
 def parse_port_spec(text: str) -> set[int]:
+    """Parse a port spec like '1-4+6' into a set of ints."""
     ports: set[int] = set()
     for part in text.replace(" ", "").split("+"):
         if not part:
@@ -359,6 +381,7 @@ def parse_port_spec(text: str) -> set[int]:
 
 
 def parse_uplink_ports(text: str) -> tuple[set[int], dict[str, set[int]]]:
+    """Parse global and per-switch uplink port specs."""
     global_ports: set[int] = set()
     per_switch: dict[str, set[int]] = {}
     for token in text.replace(" ", "").split(","):
@@ -374,11 +397,13 @@ def parse_uplink_ports(text: str) -> tuple[set[int], dict[str, set[int]]]:
 
 
 def uplink_ports_for(cfg, switch: str) -> set[int]:
+    """Return the configured uplink ports for one switch."""
     return cfg.uplink_ports_by_switch.get(switch, cfg.uplink_ports)
 
 
 
 def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -> Config:
+    """Build a Config from the INI file, then environment overrides."""
     env = os.environ if env is None else env
     cfg = Config()
 
@@ -427,6 +452,7 @@ def load_config(path: str | None = None, env: Mapping[str, str] | None = None) -
 
 # --- BER + SNMP -------------------------------------------------------------
 def ber_encode_length(n: int) -> bytes:
+    """Encode a BER length in short or long form."""
     if n < 0x80:
         return bytes([n])
     body = b""
@@ -437,6 +463,7 @@ def ber_encode_length(n: int) -> bytes:
 
 
 def ber_encode_integer(n: int) -> bytes:
+    """Encode a signed integer as a BER INTEGER TLV."""
     if n == 0:
         body = b"\x00"
     else:
@@ -450,14 +477,17 @@ def ber_encode_integer(n: int) -> bytes:
 
 
 def ber_encode_octet_string(data: bytes) -> bytes:
+    """Encode bytes as a BER OCTET STRING TLV."""
     return b"\x04" + ber_encode_length(len(data)) + data
 
 
 def ber_encode_null() -> bytes:
+    """Return the two-byte BER NULL TLV."""
     return b"\x05\x00"
 
 
 def ber_encode_oid(oid: str) -> bytes:
+    """Encode a dotted OID string as a BER OBJECT IDENTIFIER TLV."""
     parts = [int(p) for p in oid.split(".")]
     body = [parts[0] * 40 + parts[1]]
     for n in parts[2:]:
@@ -474,11 +504,13 @@ def ber_encode_oid(oid: str) -> bytes:
 
 
 def ber_encode_sequence(items: list[bytes]) -> bytes:
+    """Wrap encoded items in a BER SEQUENCE TLV."""
     body = b"".join(items)
     return b"\x30" + ber_encode_length(len(body)) + body
 
 
 def ber_decode_tlv(data: bytes, offset: int = 0) -> tuple[int, bytes, int]:
+    """Read one tag-length-value; return (tag, value, next offset)."""
     tag = data[offset]
     offset += 1
     length = data[offset]
@@ -492,6 +524,7 @@ def ber_decode_tlv(data: bytes, offset: int = 0) -> tuple[int, bytes, int]:
 
 
 def ber_decode_integer(value: bytes) -> int:
+    """Decode a BER INTEGER body, honoring two's-complement sign."""
     n = int.from_bytes(value, "big")
     if value and value[0] & 0x80:
         n -= 1 << (8 * len(value))
@@ -499,6 +532,7 @@ def ber_decode_integer(value: bytes) -> int:
 
 
 def ber_decode_oid(value: bytes) -> str:
+    """Decode a BER OBJECT IDENTIFIER body to dotted form."""
     if not value:
         return ""
     parts = [value[0] // 40, value[0] % 40]
@@ -535,10 +569,12 @@ _VERSION_INT = {"1": 0, "2c": 1}
 
 
 class SnmpError(Exception):
+    """Raised when an SNMP request fails or times out."""
     pass
 
 
 def decode_value(tag: int, value: bytes) -> object:
+    """Decode a varbind value given its ASN.1 tag."""
     if tag in _INTEGER_TAGS:
         return ber_decode_integer(value)
     if tag == TAG_OCTET:
@@ -551,6 +587,7 @@ def decode_value(tag: int, value: bytes) -> object:
 
 
 def decode_port_list(value: bytes) -> list[int]:
+    """Decode a bridge-port bit string into 1-based port numbers."""
     ports: list[int] = []
     for octet_index, byte in enumerate(value):
         for bit in range(8):
@@ -561,6 +598,7 @@ def decode_port_list(value: bytes) -> list[int]:
 
 def _apply_pdu(pdu_tag: int, request_id: int, oids: list[str],
                max_repetitions: int | None) -> bytes:
+    """Build a GET, GETNEXT, or GETBULK PDU TLV."""
     varbinds = b"".join(
         ber_encode_sequence([ber_encode_oid(oid), ber_encode_null()]) for oid in oids
     )
@@ -584,6 +622,7 @@ def _apply_pdu(pdu_tag: int, request_id: int, oids: list[str],
 
 def _encode_request(community: str, version_int: int, request_id: int, pdu_type: int,
                     oids: list[str], max_repetitions: int | None = None) -> bytes:
+    """Encode a complete SNMP request message."""
     return ber_encode_sequence([
         ber_encode_integer(version_int),
         ber_encode_octet_string(community.encode()),
@@ -592,6 +631,7 @@ def _encode_request(community: str, version_int: int, request_id: int, pdu_type:
 
 
 def _parse_varbinds(payload: bytes) -> list[tuple[str, object]]:
+    """Parse a varbind-list payload into (oid, value) pairs."""
     out: list[tuple[str, object]] = []
     offset = 0
     while offset < len(payload):
@@ -604,6 +644,7 @@ def _parse_varbinds(payload: bytes) -> list[tuple[str, object]]:
 
 
 def _parse_response(data: bytes) -> tuple[int, int, list[tuple[str, object]]]:
+    """Parse an SNMP response into (version, request id, varbinds)."""
     _, message, _ = ber_decode_tlv(data)
     offset = 0
     _, version_bytes, offset = ber_decode_tlv(message, offset)
@@ -623,19 +664,23 @@ def _parse_response(data: bytes) -> tuple[int, int, list[tuple[str, object]]]:
 
 
 def _oid_key(oid: str) -> tuple[int, ...]:
+    """Convert a dotted OID to a tuple of ints for comparison."""
     return tuple(int(part) for part in oid.split("."))
 
 
 def _oid_in_subtree(oid: str, base: str) -> bool:
+    """Return True when oid lies under the base OID."""
     oid_parts = _oid_key(oid)
     base_parts = _oid_key(base)
     return oid_parts[:len(base_parts)] == base_parts
 
 
 class SnmpClient:
+    """Minimal SNMP v1/v2c client over UDP."""
     def __init__(self, host: str, community: str, version: str = "2c",
                  timeout: float = 3.0, retries: int = 2,
                  source: str | None = None):
+        """Store connection settings and seed a random request id."""
         self.host = host
         self.community = community
         self.version = version
@@ -646,6 +691,7 @@ class SnmpClient:
         self.request_id = random.randint(1, 2 ** 31 - 1)
 
     def _exchange(self, packet: bytes) -> bytes:
+        """Send one datagram and return the reply, retrying on timeout."""
         last_error = "timeout"
         for _ in range(self.retries + 1):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -664,6 +710,7 @@ class SnmpClient:
 
     def _request(self, pdu_type: int, oids: list[str],
                  max_repetitions: int | None = None) -> list[tuple[str, object]]:
+        """Send one request and return its varbinds, checking the request id."""
         self.request_id = (self.request_id + 1) & 0x7FFFFFFF
         packet = _encode_request(self.community, self.version_int, self.request_id,
                                  pdu_type, oids, max_repetitions)
@@ -673,9 +720,11 @@ class SnmpClient:
         return varbinds
 
     def get(self, oids: list[str]) -> dict[str, object]:
+        """Issue a GET and return an OID->value map."""
         return dict(self._request(PDU_GET, oids))
 
     def get_next(self, oid: str) -> tuple[str, object] | None:
+        """Issue a GETNEXT; return the next (oid, value) or None at the end."""
         varbinds = self._request(PDU_GET_NEXT, [oid])
         if not varbinds:
             return None
@@ -685,9 +734,11 @@ class SnmpClient:
         return next_oid, value
 
     def get_bulk(self, base_oid: str, max_repetitions: int = 25) -> list[tuple[str, object]]:
+        """Issue a GETBULK and return up to max_repetitions varbinds."""
         return self._request(PDU_GET_BULK, [base_oid], max_repetitions)
 
     def walk(self, base_oid: str) -> list[tuple[str, object]]:
+        """Walk every (oid, value) pair under base_oid via GETNEXT."""
         results: list[tuple[str, object]] = []
         current = base_oid
         for _ in range(5000):
@@ -734,6 +785,7 @@ OUI_TABLE: dict[str, str] = {
 
 # --- Values and identifiers -------------------------------------------------
 def lookup_vendor(mac: str) -> str | None:
+    """Return the OUI vendor for a MAC, or None when unknown."""
     normalized = mac.replace(":", "").replace("-", "").replace(".", "").upper()
     if len(normalized) < 6:
         return None
@@ -742,6 +794,7 @@ def lookup_vendor(mac: str) -> str | None:
 
 # --- Shell + interfaces -----------------------------------------------------
 def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
+    """Run a subprocess and return (returncode, stdout, stderr)."""
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                               check=False)
@@ -751,6 +804,7 @@ def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
 
 
 def ping_argv(host: str, count: int, source: str | None = None) -> list[str]:
+    """Build the platform-appropriate ping command for a host."""
     if sys.platform.startswith("win"):
         argv = ["ping", "-n", str(count)]
         if source:
@@ -781,12 +835,14 @@ _WIN_DESC_RE = re.compile(r"Description[^:]*:\s*(.+)")
 
 @dataclass
 class InterfaceAddr:
+    """One IPv4 address and its prefix length on an interface."""
     ip: str
     prefix: int
 
 
 @dataclass
 class InterfaceInfo:
+    """An interface's name, IPv4 addresses, and optional gateway."""
     name: str
     addrs: list[InterfaceAddr] = field(default_factory=list)
     gateway: str | None = None
@@ -794,11 +850,13 @@ class InterfaceInfo:
 
 @dataclass
 class LanInterface:
+    """The wired LAN interface selected for the checks."""
     name: str
     primary_ip: str
     addrs: list[InterfaceAddr]
 
     def source_for(self, dst: str) -> str:
+        """Return the local source IP whose subnet can reach dst."""
         for addr in self.addrs:
             if _ip_in_network(dst, addr.ip, addr.prefix):
                 return addr.ip
@@ -806,6 +864,7 @@ class LanInterface:
 
 
 def _ip_in_network(ip: str, net_ip: str, prefix: int) -> bool:
+    """Return True when ip falls inside net_ip/prefix."""
     try:
         return ipaddress.ip_address(ip) in ipaddress.ip_network(
             f"{net_ip}/{prefix}", strict=False)
@@ -814,10 +873,12 @@ def _ip_in_network(ip: str, net_ip: str, prefix: int) -> bool:
 
 
 def office_network(cfg: Config):
+    """Return the office LAN network derived from the gateway."""
     return ipaddress.ip_network(f"{cfg.gateway}/{_OFFICE_PREFIX}", strict=False)
 
 
 def _has_addr_in(info: InterfaceInfo, network) -> bool:
+    """Return True when info has an address inside network."""
     for addr in info.addrs:
         try:
             if ipaddress.ip_address(addr.ip) in network:
@@ -828,6 +889,7 @@ def _has_addr_in(info: InterfaceInfo, network) -> bool:
 
 
 def _prefix_from_mask(mask: str) -> int:
+    """Convert a dotted netmask to a prefix length."""
     try:
         return bin(int(ipaddress.IPv4Address(mask))).count("1")
     except (ipaddress.AddressValueError, ValueError):
@@ -835,6 +897,7 @@ def _prefix_from_mask(mask: str) -> int:
 
 
 def parse_linux_interfaces(text: str) -> list[InterfaceInfo]:
+    """Parse 'ip -4 -o addr show' output into interfaces."""
     out: dict[str, InterfaceInfo] = {}
     for name, ip, prefix in _LINUX_IFACE_RE.findall(text):
         if name == "lo":
@@ -845,6 +908,7 @@ def parse_linux_interfaces(text: str) -> list[InterfaceInfo]:
 
 
 def parse_macos_interfaces(text: str) -> list[InterfaceInfo]:
+    """Parse 'ifconfig -a' output into interfaces."""
     out: list[InterfaceInfo] = []
     current: InterfaceInfo | None = None
     for line in text.splitlines():
@@ -865,6 +929,7 @@ def parse_macos_interfaces(text: str) -> list[InterfaceInfo]:
 
 
 def parse_windows_interfaces(text: str) -> list[InterfaceInfo]:
+    """Parse 'ipconfig /all' output into interfaces."""
     out: list[InterfaceInfo] = []
     matches = list(_WIN_ADAPTER_RE.finditer(text))
     for index, match in enumerate(matches):
@@ -887,6 +952,7 @@ def parse_windows_interfaces(text: str) -> list[InterfaceInfo]:
 
 
 def iter_interfaces(runner=run_command) -> list[InterfaceInfo]:
+    """Enumerate local interfaces for the current platform."""
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
         return parse_windows_interfaces(out)
@@ -900,6 +966,7 @@ def iter_interfaces(runner=run_command) -> list[InterfaceInfo]:
 def resolve_lan_interface(cfg: Config, runner=run_command,
                           interfaces: list[InterfaceInfo] | None = None
                           ) -> LanInterface | None:
+    """Choose the wired LAN interface, honoring any override."""
     if interfaces is None:
         interfaces = iter_interfaces(runner)
     override = getattr(cfg, "lan_interface", None)
@@ -928,6 +995,7 @@ def resolve_lan_interface(cfg: Config, runner=run_command,
 
 
 def _primary_ip(info: InterfaceInfo, office) -> str:
+    """Return the office-LAN address, else the interface's first address."""
     for addr in info.addrs:
         try:
             if ipaddress.ip_address(addr.ip) in office:
@@ -939,6 +1007,7 @@ def _primary_ip(info: InterfaceInfo, office) -> str:
 
 @dataclass
 class PingResult:
+    """Parsed ping outcome: loss percentage and RTT statistics."""
     host: str
     transmitted: int = 0
     received: int = 0
@@ -949,6 +1018,7 @@ class PingResult:
 
 
 def parse_ping_output(host: str, output: str) -> PingResult:
+    """Parse Linux, macOS, or Windows ping output into a PingResult."""
     result = PingResult(host=host)
 
     loss = re.search(r"(\d+(?:\.\d+)?)%\s*(?:packet\s+)?loss", output, re.IGNORECASE)
@@ -997,18 +1067,21 @@ def parse_ping_output(host: str, output: str) -> PingResult:
 
 def ping(host: str, count: int = 10, timeout: float = 3.0,
          runner=run_command, source: str | None = None) -> PingResult:
+    """Ping a host and return the parsed result."""
     _, out, _ = runner(ping_argv(host, count, source=source),
                        timeout=count * timeout + 5)
     return parse_ping_output(host, out)
 
 
 def build_dns_query(name: str, txid: int) -> bytes:
+    """Build a DNS A-record query packet."""
     header = struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0)
     question = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
     return header + question + struct.pack(">HH", 1, 1)
 
 
 def _skip_dns_name(data: bytes, offset: int) -> int:
+    """Return the offset just past a DNS name, following compression."""
     while offset < len(data):
         length = data[offset]
         if length == 0:
@@ -1020,6 +1093,7 @@ def _skip_dns_name(data: bytes, offset: int) -> int:
 
 
 def parse_dns_a(data: bytes) -> list[str]:
+    """Extract A-record addresses from a DNS response."""
     if len(data) < 12:
         return []
     _txid, flags, qdcount, ancount, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
@@ -1043,6 +1117,7 @@ def parse_dns_a(data: bytes) -> list[str]:
 
 
 def dns_query(server: str, name: str, timeout: float = 3.0, source: str | None = None) -> tuple[bool, float, list[str]]:
+    """Query one DNS server; return (ok, elapsed_ms, addresses)."""
     txid = random.randint(0, 0xFFFF)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
@@ -1066,6 +1141,7 @@ def dns_query(server: str, name: str, timeout: float = 3.0, source: str | None =
 
 @dataclass
 class LocalConfig:
+    """Detected local addressing, DNS, and default-route interface."""
     ip: str | None = None
     mask: str | None = None
     gateway: str | None = None
@@ -1076,6 +1152,7 @@ class LocalConfig:
 
 
 def parse_ipconfig_windows(text: str) -> LocalConfig:
+    """Parse Windows 'ipconfig /all' into a LocalConfig."""
     lc = LocalConfig()
     ip = re.search(r"IPv4 Address[^:]*:\s*([\d.]+)", text)
     if ip:
@@ -1093,6 +1170,7 @@ def parse_ipconfig_windows(text: str) -> LocalConfig:
 
 
 def parse_linux(route_text: str, addr_text: str, resolv_text: str) -> LocalConfig:
+    """Parse Linux route/addr/resolv output into a LocalConfig."""
     lc = LocalConfig()
     gw = re.search(r"default via ([\d.]+)(?: dev (\S+))?", route_text)
     if gw:
@@ -1109,6 +1187,7 @@ def parse_linux(route_text: str, addr_text: str, resolv_text: str) -> LocalConfi
 
 
 def parse_macos(route_text: str, dns_text: str, ifaddr: str) -> LocalConfig:
+    """Parse macOS route/DNS/ifaddr output into a LocalConfig."""
     lc = LocalConfig()
     gw = re.search(r"gateway:\s*([\d.]+)", route_text)
     if gw:
@@ -1122,6 +1201,7 @@ def parse_macos(route_text: str, dns_text: str, ifaddr: str) -> LocalConfig:
 
 
 def read_dns_servers(runner=run_command) -> list[str]:
+    """Return the system's configured DNS servers."""
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
         return parse_ipconfig_windows(out).dns
@@ -1136,7 +1216,7 @@ def read_dns_servers(runner=run_command) -> list[str]:
 
 
 def read_interface_dns(iface: str | None, runner=run_command) -> list[str] | None:
-    """Per-interface DNS when the platform tracks it, else None (use the global list)."""
+    """Per-interface DNS when the platform tracks it, else None (use global)."""
     if not iface or sys.platform.startswith("win") or sys.platform == "darwin":
         return None
     for argv in (["resolvectl", "dns", iface],
@@ -1154,6 +1234,7 @@ def read_interface_dns(iface: str | None, runner=run_command) -> list[str] | Non
 
 
 def default_route_interface(runner=run_command) -> str | None:
+    """Return the interface carrying the default route."""
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
         for info in parse_windows_interfaces(out):
@@ -1171,6 +1252,7 @@ def default_route_interface(runner=run_command) -> str | None:
 
 
 def detect_local_config(cfg: Config, runner=run_command, lan=None) -> LocalConfig:
+    """Detect the wired configuration used by the local checks."""
     if lan is None:
         lan = resolve_lan_interface(cfg, runner)
     if lan is None:
@@ -1199,11 +1281,13 @@ def detect_local_config(cfg: Config, runner=run_command, lan=None) -> LocalConfi
 
 
 def _label_block(pairs) -> str:
+    """Render (label, value) pairs as an aligned text block."""
     width = max((len(key) for key, _ in pairs), default=0)
     return "\n".join(f"{key:<{width}}: {value}" for key, value in pairs)
 
 
 def _wired_dns(dns: list[str], office) -> list[str]:
+    """Keep DNS servers that are public or on the office LAN."""
     kept: list[str] = []
     for server in dns:
         try:
@@ -1216,6 +1300,7 @@ def _wired_dns(dns: list[str], office) -> list[str]:
 
 
 def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
+    """Check 1: local wired addressing and DNS."""
     if local_fn is None:
         local_fn = lambda: detect_local_config(cfg)
     lc = local_fn()
@@ -1248,6 +1333,7 @@ def check_local_config(cfg: Config, local_fn=None) -> CheckResult:
 
 
 def _ping_verdict(result: PingResult, warn_loss: float = 20.0) -> Status:
+    """Map a ping result to PASS, WARN, or FAIL."""
     if result.loss_pct >= 100.0 or result.received == 0:
         return Status.FAIL
     if result.loss_pct > warn_loss or (result.max_ms is not None and result.min_ms is not None
@@ -1257,6 +1343,7 @@ def _ping_verdict(result: PingResult, warn_loss: float = 20.0) -> Status:
 
 
 def check_gateway(cfg: Config, ping_fn=ping) -> CheckResult:
+    """Check 2: the default gateway answers pings."""
     result = ping_fn(cfg.gateway, count=10, timeout=cfg.timeout)
     status = _ping_verdict(result)
     detail = (f"loss {result.loss_pct:.0f}% avg {result.avg_ms} ms "
@@ -1269,6 +1356,7 @@ def check_gateway(cfg: Config, ping_fn=ping) -> CheckResult:
 
 
 def check_internet(cfg: Config, ping_fn=ping) -> CheckResult:
+    """Check 3: public IPs are reachable without DNS."""
     rows: list[str] = []
     reachable: list[str] = []
     for host in cfg.public_dns:
@@ -1290,6 +1378,7 @@ def check_internet(cfg: Config, ping_fn=ping) -> CheckResult:
 
 
 def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
+    """Check 4: ISP and public DNS servers resolve the domain."""
     entries: list[tuple[str, bool, float]] = []
     isp_ok = False
     public_ok = False
@@ -1321,6 +1410,7 @@ def check_dns(cfg: Config, query_fn=dns_query) -> CheckResult:
 # --- Checks 1-10 ------------------------------------------------------------
 def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
                      ping_fn=ping, query_fn=dns_query) -> None:
+    """Run checks 1-4, stopping early on a FAIL."""
     if local_fn is None:
         local_fn = lambda: detect_local_config(cfg)
     _diag(cfg, "starting check 1: Local config")
@@ -1344,6 +1434,7 @@ def run_layer_checks(cfg: Config, reporter: Reporter, local_fn=None,
 
 
 def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
+    """Check 5: all switch management IPs answer pings."""
     down = [name for name, ip in cfg.switches.items()
             if ping_fn(ip, count=2, timeout=cfg.timeout).received == 0]
     if not down:
@@ -1364,6 +1455,7 @@ def check_switches(cfg: Config, ping_fn=ping) -> CheckResult:
 
 @dataclass
 class RogueResponder:
+    """A DHCP server that answered the probe."""
     server_ip: str
     mac: str = ""
     vendor: str | None = None
@@ -1371,11 +1463,13 @@ class RogueResponder:
 
 @dataclass
 class DhcpProbe:
+    """Rogue-DHCP probe outcome; None responders means not tested."""
     responders: list[RogueResponder] | None
     reason: str = ""
 
 
 def _dhcp_chaddr(mac: str | None) -> bytes:
+    """BOOTP chaddr: a real NIC MAC padded to 16 bytes, else zeros."""
     if not mac:
         return b"\x00" * 16
     try:
@@ -1387,6 +1481,7 @@ def _dhcp_chaddr(mac: str | None) -> bytes:
 
 def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
                         iface: str | None = None) -> DhcpProbe:
+    """Send a DHCP DISCOVER via scapy and collect responders."""
     try:
         from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
     except ImportError:
@@ -1408,6 +1503,8 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
         except Exception:  # noqa: BLE001 - interface lookup is best-effort
             hwaddr = None
     try:
+        # Use the NIC's real MAC and request a broadcast reply (flag 0x8000):
+        # servers often unicast the OFFER to chaddr, which a zero MAC never receives.
         packet = (Ether(dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
                   / UDP(sport=68, dport=67)
                   / BOOTP(op=1, chaddr=_dhcp_chaddr(hwaddr), flags=0x8000)
@@ -1432,6 +1529,7 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
 
 def check_rogue_dhcp(cfg: Config, discover_fn=None,
                      iface: str | None = None) -> tuple[CheckResult, list[str]]:
+    """Check 6: flag DHCP servers other than the gateway."""
     if discover_fn is None:
         discover_fn = lambda cfg=None, iface=iface: scapy_dhcp_discover(
             cfg=cfg, iface=iface)
@@ -1472,6 +1570,7 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
 
 
 class TelnetError(Exception):
+    """Raised for telnet connection or command failures."""
     pass
 
 
@@ -1482,6 +1581,7 @@ _MAC_LINE = re.compile(
 
 # Retained: read-only `debug info` parser; no longer wired into check 7; still unit-tested.
 def parse_debug_info(text: str) -> dict[str, int]:
+    """Parse a switch 'debug info' MAC table; retained for tests."""
     table: dict[str, int] = {}
     for mac, port in _MAC_LINE.findall(text):
         normalized = mac.replace("-", ":").upper()
@@ -1490,18 +1590,22 @@ def parse_debug_info(text: str) -> dict[str, int]:
 
 
 class TelnetConnection:
+    """Minimal read-only telnet client for switch commands."""
     IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 
     def __init__(self, host: str, timeout: float = 5.0):
+        """Store the host and timeout; connect later."""
         self.host = host
         self.timeout = timeout
         self.sock: socket.socket | None = None
 
     def connect(self) -> None:
+        """Open the TCP connection and negotiate telnet options."""
         self.sock = socket.create_connection((self.host, 23), timeout=self.timeout)
         self._negotiate(self._read_until_idle())
 
     def _read_until_idle(self, idle: float = 0.5) -> bytes:
+        """Read until the socket goes idle; return all bytes received."""
         assert self.sock is not None
         self.sock.settimeout(idle)
         chunks: list[bytes] = []
@@ -1516,6 +1620,7 @@ class TelnetConnection:
         return b"".join(chunks)
 
     def _negotiate(self, data: bytes) -> None:
+        """Refuse every telnet option with WONT/DONT."""
         assert self.sock is not None
         response = bytearray()
         i = 0
@@ -1533,11 +1638,13 @@ class TelnetConnection:
             self.sock.sendall(bytes(response))
 
     def login(self, user: str, password: str) -> str:
+        """Send the username then password; return the login output."""
         self._read_until_idle()
         self.run_command(user, wait=0.5)
         return self.run_command(password, wait=1.0).decode(errors="replace")
 
     def run_command(self, cmd: str, wait: float = 1.0) -> bytes:
+        """Send a command and return the response after a short wait."""
         if self.sock is None:
             raise TelnetError("not connected")
         self.sock.sendall(cmd.encode() + b"\r\n")
@@ -1545,6 +1652,7 @@ class TelnetConnection:
         return self._read_until_idle()
 
     def close(self) -> None:
+        """Close the socket and forget it."""
         if self.sock is not None:
             self.sock.close()
             self.sock = None
@@ -1556,10 +1664,12 @@ BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 
 
 def mac_to_oid_suffix(mac: str) -> str:
+    """Convert a MAC address to its dotted OID suffix."""
     return ".".join(str(int(byte, 16)) for byte in mac.replace("-", ":").split(":"))
 
 
 def mac_from_oid_suffix(oid: str, base: str) -> str | None:
+    """Extract the last six OID arcs as an uppercase MAC, or None."""
     if not oid.startswith(base + "."):
         return None
     parts = oid[len(base) + 1:].split(".")
@@ -1576,6 +1686,7 @@ def mac_from_oid_suffix(oid: str, base: str) -> str | None:
 
 
 def resolve_ifindex_ports(client) -> dict[int, int]:
+    """Map FDB ifindex values to bridge port numbers."""
     mapping: dict[int, int] = {}
     for oid, value in client.walk(BASE_PORT_IFINDEX_OID):
         if isinstance(value, int):
@@ -1585,11 +1696,13 @@ def resolve_ifindex_ports(client) -> dict[int, int]:
 
 @dataclass
 class Devicelist:
+    """Per-switch MAC->port maps plus collection errors."""
     devices: dict[str, dict[str, int]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
 
 def _walk_fdb(client) -> list[tuple[str, object, str]]:
+    """Walk the Q-BRIDGE then BRIDGE FDB and return tagged rows."""
     error: SnmpError | None = None
     for base in (QB_FDB_OID, BRIDGE_FDB_OID):
         try:
@@ -1625,6 +1738,7 @@ def read_interface_macs(iface: str | None, runner=run_command) -> set[str]:
 
 
 def _is_valid_mac(mac: str) -> bool:
+    """Return True for a nonzero, unicast, six-octet MAC."""
     try:
         octets = [int(part, 16) for part in mac.replace("-", ":").split(":")]
     except ValueError:
@@ -1643,7 +1757,11 @@ _TRUNK_MIN_MACS = 8
 
 def _trunk_ports(devs: Devicelist, switch: str, configured: set[int],
                  min_macs: int = _TRUNK_MIN_MACS) -> set[int]:
-    """Configured uplinks plus ports that learn enough MACs to be a trunk."""
+    """Configured uplinks plus ports that learn enough MACs to be a trunk.
+
+    A port carrying an inter-switch cascade or the router sees many MACs; that
+    makes it infrastructure even when it is missing from uplink_ports.
+    """
     port_counts: dict[int, int] = {}
     for port in devs.devices.get(switch, {}).values():
         port_counts[port] = port_counts.get(port, 0) + 1
@@ -1654,6 +1772,7 @@ def _trunk_ports(devs: Devicelist, switch: str, configured: set[int],
 # --- Device inventory -------------------------------------------------------
 def collect_devices(cfg: Config, client_factory=SnmpClient,
                     source: str | None = None) -> Devicelist:
+    """Walk every switch's FDB into a Devicelist."""
     result = Devicelist()
     if not cfg.snmp_community:
         return result
@@ -1711,6 +1830,7 @@ def access_devices(devs: Devicelist, uplink_of,
 
 def format_inventory(devs: Devicelist, rogue_macs: list[str],
                      local_macs: set[str] | None = None) -> str:
+    """Render the device list, tagging rogue and local MACs."""
     rogue = {m.replace("-", ":").upper() for m in rogue_macs}
     local = {m.replace("-", ":").upper() for m in (local_macs or set())}
     port_w = max((len(str(port)) for macs in devs.devices.values()
@@ -1737,6 +1857,7 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
                            client_factory=SnmpClient,
                            source: str | None = None,
                            local_macs: set[str] | None = None) -> CheckResult:
+    """Check 8: list end devices and locate rogue MACs."""
     title = "Device inventory"
     if not cfg.snmp_community:
         return CheckResult(8, title, Status.WARN,
@@ -1780,6 +1901,7 @@ def check_device_inventory(cfg: Config, rogue_macs: list[str],
 
 def check_storm_hints(cfg: Config, gateway_result: PingResult,
                       client_factory=SnmpClient) -> CheckResult:
+    """Check 7: warn on gateway loss or jitter suggesting a storm."""
     jitter = None
     if gateway_result.max_ms is not None and gateway_result.min_ms is not None:
         jitter = gateway_result.max_ms - gateway_result.min_ms
@@ -1813,6 +1935,7 @@ _DHCP_TRUSTED_SERVER_BASE = PRIVATE_ROOT + ".14.7.3.1.2"
 
 @dataclass
 class HardeningState:
+    """Readable hardening settings plus the keys that timed out."""
     lbd_enabled: bool = False
     lbd_recover_time: int = 60
     storm_enabled: bool = False
@@ -1829,6 +1952,7 @@ class HardeningState:
 
 
 def _ipv4_from_snmp(value) -> str | None:
+    """Decode a four-byte SNMP IpAddress value to dotted form."""
     if isinstance(value, bytes) and len(value) == 4:
         return ".".join(str(b) for b in value)
     return None
@@ -1836,6 +1960,7 @@ def _ipv4_from_snmp(value) -> str | None:
 
 def evaluate_hardening(state: HardeningState,
                        measured: dict | None = None) -> list[str]:
+    """Return hardening findings for one switch state."""
     if not state.readable:
         return ["hardening MIB not exposed by this firmware "
                 "(cannot audit LBD/STP/storm/DHCP/DoS)"]
@@ -1882,6 +2007,7 @@ def evaluate_hardening(state: HardeningState,
 
 
 def read_hardening_state(client) -> HardeningState:
+    """Read the hardening scalars and trusted DHCP servers."""
     state = HardeningState()
     values: dict[str, object] = {}
     unknown: set[str] = set()
@@ -1923,6 +2049,7 @@ def read_hardening_state(client) -> HardeningState:
 def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
                     client_factory=SnmpClient,
                     source: str | None = None) -> CheckResult:
+    """Check 9: audit each switch against the hardening baseline."""
     if not cfg.snmp_community:
         return CheckResult(9, "Hardening audit", Status.WARN,
                            detail="SNMP community not set; cannot audit switches")
@@ -1955,6 +2082,7 @@ def check_hardening(cfg: Config, measured: dict[str, dict] | None = None,
 
 
 def ceil_to_64(n: float) -> int:
+    """Round n up to the next multiple of 64."""
     return int(-(-n // 64) * 64)
 
 
@@ -1970,6 +2098,7 @@ def kbps_to_n(kbps: float) -> int:
 
 
 def format_port_list(ports: list[int]) -> str:
+    """Compress a port list into ranges like '1-4,6'."""
     if not ports:
         return "none"
     ordered = sorted(set(ports))
@@ -1990,11 +2119,13 @@ STORM_FALLBACK_KBPS = 313 * 64
 
 def compute_threshold(peak_kbps: float, link_kbps: int, factor: int = 4,
                       floor: int = 10000) -> int:
+    """Choose a storm threshold from peak rate, link speed, and floor."""
     target = max(ceil_to_64(peak_kbps * factor), ceil_to_64(floor))
     return min(target, int(0.8 * link_kbps))
 
 
 def _counter_snapshot(client) -> dict[str, int]:
+    """Snapshot interface octet counters keyed by direction and ifindex."""
     snapshot: dict[str, int] = {}
     for oid, value in client.walk("1.3.6.1.2.1.31.1.1.1.9"):
         snapshot["b" + oid.rsplit(".", 1)[1]] = int(value)
@@ -2006,11 +2137,13 @@ def _counter_snapshot(client) -> dict[str, int]:
 def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
                             client_factory=SnmpClient,
                             source: str | None = None) -> dict[str, dict]:
+    """Sample counters per switch and compute thresholds in parallel."""
     if not cfg.snmp_community or sample_seconds <= 0:
         return {}
     import concurrent.futures
 
     def per_switch(item: tuple[str, str]) -> tuple[str, dict]:
+        """Sample one switch and return its recommended threshold."""
         name, host = item
         try:
             client = client_factory(host, cfg.snmp_community,
@@ -2053,6 +2186,7 @@ def format_threshold_samples(measured: dict[str, dict]) -> CheckResult:
 
 @dataclass
 class MgmtAddressResult:
+    """Outcome of ensuring the transient management address."""
     added: bool
     address: str | None = None
     interface: str | None = None
@@ -2061,6 +2195,7 @@ class MgmtAddressResult:
 
 
 def _validate_mgmt_address(cfg: Config) -> str:
+    """Validate and return the management address, or raise ValueError."""
     addr = ipaddress.ip_address(cfg.mgmt_address)
     if addr not in _MGMT_NETWORK:
         raise ValueError(f"{cfg.mgmt_address} is outside {_MGMT_NETWORK}")
@@ -2070,6 +2205,7 @@ def _validate_mgmt_address(cfg: Config) -> str:
 
 
 def mgmt_add_argv(iface: str, addr: str, platform: str | None = None) -> list[str]:
+    """Build the platform command that adds the management address."""
     platform = platform or sys.platform
     if platform.startswith("win"):
         return ["netsh", "interface", "ipv4", "add", "address", iface, addr,
@@ -2080,6 +2216,7 @@ def mgmt_add_argv(iface: str, addr: str, platform: str | None = None) -> list[st
 
 
 def mgmt_del_argv(iface: str, addr: str, platform: str | None = None) -> list[str]:
+    """Build the platform command that removes the management address."""
     platform = platform or sys.platform
     if platform.startswith("win"):
         return ["netsh", "interface", "ipv4", "delete", "address", iface, addr]
@@ -2089,6 +2226,7 @@ def mgmt_del_argv(iface: str, addr: str, platform: str | None = None) -> list[st
 
 
 def _lan_has_mgmt(lan: LanInterface, cfg: Config) -> bool:
+    """Return True when the LAN interface already holds a management address."""
     for addr in lan.addrs:
         try:
             if ipaddress.ip_address(addr.ip) in _MGMT_NETWORK:
@@ -2099,6 +2237,7 @@ def _lan_has_mgmt(lan: LanInterface, cfg: Config) -> bool:
 
 
 def ensure_mgmt_address(cfg: Config, lan: LanInterface | None) -> MgmtAddressResult:
+    """Report whether the management address is present or needs adding."""
     if lan is None:
         return MgmtAddressResult(False, detail="no wired LAN interface")
     addr = _validate_mgmt_address(cfg)
@@ -2111,6 +2250,7 @@ def ensure_mgmt_address(cfg: Config, lan: LanInterface | None) -> MgmtAddressRes
 
 
 def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
+    """Remove the management address from the interface."""
     try:
         addr = _validate_mgmt_address(cfg)
     except ValueError:
@@ -2129,6 +2269,7 @@ def format_command(argv: list[str], platform: str | None = None) -> str:
 
 
 def _report_mgmt(result: MgmtAddressResult, platform: str | None = None) -> None:
+    """Print how to add the management address when it is missing."""
     if result.detail != "missing" or not result.command:
         return
     platform = platform or sys.platform
@@ -2145,7 +2286,9 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
             inventory: bool = False, runner=run_command, verbose: bool = False,
             lan=None, emit_advisory: bool = True) -> None:
+    """Run the default or opt-in check suites into the reporter."""
     def _run_check(check_id: int, title: str, fn) -> None:
+        """Run one check callback, recording a WARN on unexpected errors."""
         _diag(cfg, f"starting check {check_id}: {title}")
         try:
             fn()
@@ -2207,6 +2350,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         measured: dict[str, dict] = {}
 
         def _measure() -> None:
+            """Sample storm thresholds once and cache the result."""
             measured.update(measure_storm_threshold(
                 cfg, sample_seconds=sample, source=source_for("10.90.90.90")))
 
@@ -2214,6 +2358,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             local_macs = read_interface_macs(lan.name) if lan else set()
 
             def _inventory_optin() -> None:
+                """Add the device-inventory result (check 8)."""
                 reporter.add(check_device_inventory(
                     cfg, [], source=source_for("10.90.90.90"),
                     local_macs=local_macs))
@@ -2222,6 +2367,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         if hardening:
             def _hardening() -> None:
+                """Add the hardening result (check 9), sampling first if requested."""
                 if sample is not None and not measured:
                     _measure()
                 reporter.add(check_hardening(cfg, measured=measured,
@@ -2231,6 +2377,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         if sample is not None:
             def _thresholds() -> None:
+                """Add the storm-threshold result (check 10), sampling if needed."""
                 if not measured:
                     _measure()
                 reporter.add(format_threshold_samples(measured))
@@ -2256,12 +2403,14 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
 
         def _rogue() -> None:
+            """Add the rogue-DHCP result (check 6)."""
             result, _macs = check_rogue_dhcp(cfg, iface=lan.name if lan else None)
             reporter.add(result)
 
         _run_check(6, "Rogue DHCP", _rogue)
 
         def _storm() -> None:
+            """Add the loop/storm hint result (check 7)."""
             gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
                                 runner=runner, source=source_for(cfg.gateway))
             reporter.add(check_storm_hints(cfg, gateway_ping))

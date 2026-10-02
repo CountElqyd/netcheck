@@ -686,6 +686,7 @@ def lookup_vendor(mac: str) -> str | None:
 
 
 import re
+import shlex
 import subprocess
 
 
@@ -1991,6 +1992,14 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
     if prompt_yes_no(f"Set this PC's DNS to {primary}/{secondary}?", tty=tty):
         applied.append(f"requested DNS change to {primary}/{secondary}")
     return applied
+
+
+def format_command(argv: list[str], platform: str | None = None) -> str:
+    """Render an argv list for display (never for execution)."""
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 def _report_mgmt(result: MgmtAddressResult) -> None:

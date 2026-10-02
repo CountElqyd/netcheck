@@ -7,6 +7,7 @@ from netcheck import (
     InterfaceAddr,
     LanInterface,
     ensure_mgmt_address,
+    format_command,
     mgmt_add_argv,
     mgmt_del_argv,
     remove_mgmt_address,
@@ -41,6 +42,27 @@ class TestArgv(unittest.TestCase):
             mgmt_del_argv("Ethernet", "10.90.90.100", platform="win32"),
             ["netsh", "interface", "ipv4", "delete", "address", "Ethernet",
              "10.90.90.100"])
+
+
+class TestFormatCommand(unittest.TestCase):
+    def test_posix_default_has_no_quotes(self):
+        self.assertEqual(
+            format_command(["ifconfig", "en0", "alias", "10.90.90.100",
+                            "255.255.255.0"], platform="linux"),
+            "ifconfig en0 alias 10.90.90.100 255.255.255.0")
+
+    def test_posix_quotes_argument_with_space(self):
+        self.assertEqual(
+            format_command(["ip", "addr", "replace", "a b"], platform="linux"),
+            "ip addr replace 'a b'")
+
+    def test_windows_quotes_interface_with_spaces(self):
+        self.assertEqual(
+            format_command(["netsh", "interface", "ipv4", "add", "address",
+                            "Local Area Connection", "10.90.90.100",
+                            "255.255.255.0"], platform="win32"),
+            'netsh interface ipv4 add address "Local Area Connection" '
+            "10.90.90.100 255.255.255.0")
 
 
 class TestEnsureMgmtAddress(unittest.TestCase):

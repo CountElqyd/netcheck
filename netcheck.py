@@ -78,23 +78,31 @@ class Reporter:
             ],
         }
 
+    def _wrap_block(self, value: str, width: int, initial_indent: str,
+                    subsequent_indent: str) -> list[str]:
+        lines: list[str] = []
+        for raw in value.splitlines():
+            if not raw.strip():
+                lines.append("")
+                continue
+            lines.extend(textwrap.wrap(raw, width=width,
+                                       initial_indent=initial_indent,
+                                       subsequent_indent=subsequent_indent) or [""])
+        return lines
+
     def _render_check(self, r: CheckResult, head: str, title_width: int,
                       width: int, use_color: bool) -> list[str]:
         plain_tag = f"[{r.status.value}]"
         tag = f"{_COLORS[r.status]}{plain_tag}{_RESET}" if use_color else plain_tag
         lines = [f"{tag} {head:<{title_width}}".rstrip()]
         if r.detail:
-            lines.extend(textwrap.wrap(r.detail, width=width,
-                                       initial_indent="      ",
-                                       subsequent_indent="      ") or [""])
+            lines.extend(self._wrap_block(r.detail, width, "      ", "      "))
         for label, value in (("Likely cause", r.likely_cause),
                              ("Suggested fix", r.suggested_fix)):
             if value:
                 indent = " " * (5 + len(label) + 2)
-                lines.extend(textwrap.wrap(
-                    value, width=width,
-                    initial_indent=f"    {label}: ",
-                    subsequent_indent=indent))
+                lines.extend(self._wrap_block(value, width,
+                                              f"    {label}: ", indent))
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:

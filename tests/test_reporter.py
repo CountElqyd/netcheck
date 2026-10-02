@@ -115,6 +115,21 @@ class TestReporter(unittest.TestCase):
         self.assertTrue(all(len(ln) <= 100 for ln in lines))
         self.assertGreater(len([ln for ln in lines if ln.startswith("      ")]), 1)
 
+    def test_render_preserves_detail_newlines(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.PASS, detail="first\nsecond"))
+        lines = r.render().splitlines()
+        self.assertEqual(lines[1], "      first")
+        self.assertEqual(lines[2], "      second")
+
+    def test_render_indents_each_block_line(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(7, "Device inventory", Status.PASS,
+                          detail="2 end devices\ndlink1\n    port 5  AA:BB"))
+        text = r.render()
+        self.assertIn("\n      dlink1", text)
+        self.assertIn("\n          port 5  AA:BB", text)
+
 
 if __name__ == "__main__":
     unittest.main()

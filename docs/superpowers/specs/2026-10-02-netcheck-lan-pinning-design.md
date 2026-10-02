@@ -105,6 +105,9 @@ Returns `[]` on any command failure (never raises).
   address; otherwise take the first in platform order and emit a
   `_diag(cfg, ...)` note about the ambiguity.
 - Return `None` when no candidate exists.
+- If `cfg.lan_interface` is set, validate it against the enumerated interfaces
+  (reject unknown names and names beginning with `-`) and return that interface
+  regardless of the address-based selection above.
 
 The office-LAN and management subnets are derived from `cfg.gateway`
 (`ipaddress.ip_network(f"{cfg.gateway}/24", strict=False)`) and the
@@ -163,22 +166,28 @@ def scapy_dhcp_discover(timeout=5.0, cfg=None, iface=None) -> DhcpProbe
 ### 4.5 Wiring in `run_all`
 
 - Resolve `lan = resolve_lan_interface(cfg, runner)` once at the start.
-- Build source-aware closures:
-  `layer_ping = lambda host, **kw: ping(host, runner=runner, source=lan.source_for(host) if lan else None, **kw)`.
-- `local_fn` reads the wired NIC (see §5).
-- Checks 5, 8 pass `source=lan.source_for(host)`.
-- Checks 7, 9, 10 receive `source=mgmt_source` where `mgmt_source` is
-  `lan.source_for("10.90.90.90")` if the management address is present, else
-  `None`.
+- Build a single source rule used everywhere: define
+  `source_for = lan.source_for if lan else (lambda dst: None)`. For a
+  destination `dst`, the source is then the on-subnet address when the interface
+  holds one (e.g. `10.90.90.100` for `10.90.90.90`) and `primary_ip` otherwise.
+- `layer_ping = lambda host, **kw: ping(host, runner=runner, source=source_for(host), **kw)`.
+- `local_fn = lambda: detect_local_config(cfg, runner, lan=lan)` (see §5).
+- Checks 5, 8 pass `source=source_for(host)`.
+- Checks 7, 9, 10 pass `source=source_for("10.90.90.90")`. When the management
+  address is absent, this is `primary_ip`; the switch/SNMP checks then fail or
+  WARN as expected, which is the correct diagnostic outcome.
 - If `lan is None`, check 1 FAILs and short-circuits, so no fabric check runs.
 
 ## 5. Check 1 semantics
 
-`detect_local_config(runner=run_command)` now targets the wired NIC:
+`detect_local_config(cfg, runner=run_command, lan=None) -> LocalConfig` now
+targets the wired NIC:
 
-- Call `resolve_lan_interface(cfg, runner)`; if found, parse only that
-  interface's IPv4/mask (extend `parse_linux`/`parse_macos`/the Windows parser
-  to accept a specific interface or adapter).
+- If `lan` is `None`, call `resolve_lan_interface(cfg, runner)`. If still
+  `None`, return an empty `LocalConfig` (check 1 then FAILs).
+- Parse only the chosen interface's IPv4/mask (extend
+  `parse_linux`/`parse_macos`/the Windows parser to accept a specific interface
+  or adapter).
 - Set `LocalConfig.interface` to the wired NIC name, `LocalConfig.ip`/`mask` to
   its office-LAN address, and add `LocalConfig.default_route_interface` (from
   the existing default-route parse) for the informational note.
@@ -186,7 +195,11 @@ def scapy_dhcp_discover(timeout=5.0, cfg=None, iface=None) -> DhcpProbe
   `cfg.gateway`'s `/24`; otherwise `None`. The DNS list stays the system
   resolver's (check 4 queries `cfg.dns_servers` explicitly regardless).
 
-`check_local_config(cfg, local_fn=detect_local_config) -> CheckResult`:
+`check_local_config(cfg, local_fn=None) -> CheckResult`: when `local_fn` is
+`None`, use `lambda: detect_local_config(cfg)`. Existing callers that pass an
+explicit `local_fn` (the tests) are unaffected. `run_layer_checks`'s default
+`local_fn` becomes `None` with the same resolution, so its existing explicit-args
+tests keep working.
 
 - **FAIL** — no IPv4 on the wired NIC, or no wired NIC on the office LAN.
   - `likely_cause`: "No wired address on the office LAN (`192.168.1.0/24`)."
@@ -234,12 +247,18 @@ Logic:
 4. Else (declined or `allow_fix=False`) → return `added=False` with
    `command=argv` and detail "declined".
 
-The caller then:
-- Emits a `CheckResult`-style informational line or `_diag` note with the
-  address and interface when added.
-- On failure/decline, prints the exact command (step 4) and **continues** with
-  checks 5–9. Missing management connectivity surfaces as the existing check 5
-  WARN / check 7–9 WARN, which is the correct diagnostic outcome.
+The caller then prints one short line to stdout (the same channel as the fix
+prompts) and continues:
+
+- Added: `added 10.90.90.100/24 to eth0 (removed on exit)`.
+- Already present: `using 10.90.90.100/24 on eth0` (in verbose only).
+- Declined or failed: `could not add 10.90.90.100/24; run:` followed by the
+  exact argv as a copy-pasteable command with `sudo` (Linux/macOS) or "as
+  Administrator" (Windows).
+
+Checks 5–9 always run afterward. Missing management connectivity surfaces as
+the existing check 5 WARN / checks 7–9 WARN, which is the correct diagnostic
+outcome.
 
 ### 6.2 Commands (argv lists, never shell strings)
 

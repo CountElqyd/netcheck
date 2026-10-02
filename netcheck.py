@@ -2193,53 +2193,52 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             suggested_fix=fix))
         return False
 
-    try:
-        # Opt-in checks (8 inventory, 9 hardening, 10 thresholds) run alone:
-        # when one is requested, the default 1-7 suite is skipped entirely.
-        if inventory or hardening or sample is not None:
-            if inventory:
-                first_id, first_title = 8, "Device inventory"
-            elif hardening:
-                first_id, first_title = 9, "Hardening audit"
-            else:
-                first_id, first_title = 10, "Storm thresholds"
-            if not _mgmt_gate(first_id, first_title):
-                return
-
-            measured: dict[str, dict] = {}
-
-            def _measure() -> None:
-                measured.update(measure_storm_threshold(
-                    cfg, sample_seconds=sample, source=source_for("10.90.90.90")))
-
-            if inventory:
-                local_macs = read_interface_macs(lan.name) if lan else set()
-
-                def _inventory_optin() -> None:
-                    reporter.add(check_device_inventory(
-                        cfg, [], source=source_for("10.90.90.90"),
-                        local_macs=local_macs))
-
-                _run_check(8, "Device inventory", _inventory_optin)
-
-            if hardening:
-                def _hardening() -> None:
-                    if sample is not None and not measured:
-                        _measure()
-                    reporter.add(check_hardening(cfg, measured=measured,
-                                                 source=source_for("10.90.90.90")))
-
-                _run_check(9, "Hardening audit", _hardening)
-
-            if sample is not None:
-                def _thresholds() -> None:
-                    if not measured:
-                        _measure()
-                    reporter.add(format_threshold_samples(measured))
-
-                _run_check(10, "Storm thresholds", _thresholds)
+    def _optin_checks() -> None:
+        """Opt-in checks (8 inventory, 9 hardening, 10 thresholds) run alone."""
+        if inventory:
+            first_id, first_title = 8, "Device inventory"
+        elif hardening:
+            first_id, first_title = 9, "Hardening audit"
+        else:
+            first_id, first_title = 10, "Storm thresholds"
+        if not _mgmt_gate(first_id, first_title):
             return
 
+        measured: dict[str, dict] = {}
+
+        def _measure() -> None:
+            measured.update(measure_storm_threshold(
+                cfg, sample_seconds=sample, source=source_for("10.90.90.90")))
+
+        if inventory:
+            local_macs = read_interface_macs(lan.name) if lan else set()
+
+            def _inventory_optin() -> None:
+                reporter.add(check_device_inventory(
+                    cfg, [], source=source_for("10.90.90.90"),
+                    local_macs=local_macs))
+
+            _run_check(8, "Device inventory", _inventory_optin)
+
+        if hardening:
+            def _hardening() -> None:
+                if sample is not None and not measured:
+                    _measure()
+                reporter.add(check_hardening(cfg, measured=measured,
+                                             source=source_for("10.90.90.90")))
+
+            _run_check(9, "Hardening audit", _hardening)
+
+        if sample is not None:
+            def _thresholds() -> None:
+                if not measured:
+                    _measure()
+                reporter.add(format_threshold_samples(measured))
+
+            _run_check(10, "Storm thresholds", _thresholds)
+
+    def _default_checks() -> None:
+        """The default suite: checks 1-4 then 5, 6, 7."""
         layer_ping = lambda host, **kw: ping(host, runner=runner,  # noqa: E731
                                              source=source_for(host), **kw)
         layer_query = lambda server, name, **kw: dns_query(  # noqa: E731
@@ -2268,6 +2267,12 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             reporter.add(check_storm_hints(cfg, gateway_ping))
 
         _run_check(7, "Loop/storm hints", _storm)
+
+    try:
+        if inventory or hardening or sample is not None:
+            _optin_checks()
+        else:
+            _default_checks()
     except Exception as exc:  # noqa: BLE001 - last-resort guard
         if verbose:
             import traceback

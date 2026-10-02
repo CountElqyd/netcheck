@@ -292,9 +292,9 @@ class TestOrchestration(unittest.TestCase):
         finally:
             netcheck.resolve_lan_interface = orig_resolve
         check5 = next(r for r in reporter.results if r.id == 5)
-        self.assertIn("ip addr replace", check5.suggested_fix)
-        self.assertIn("10.90.90.100/24", check5.suggested_fix)
-        self.assertIn("eth0", check5.suggested_fix)
+        self.assertIn("ip addr replace", check5.command)
+        self.assertIn("10.90.90.100/24", check5.command)
+        self.assertIn("eth0", check5.command)
         self.assertNotIn("sudo", stdout.getvalue())
 
     def test_json_stdout_remains_valid_when_gate_fires(self):
@@ -321,7 +321,7 @@ class TestOrchestration(unittest.TestCase):
         self.assertTrue(out.lstrip().startswith("{"))
         data = json.loads(out)
         check5 = next(c for c in data["checks"] if c["id"] == 5)
-        self.assertIn("ip addr replace", check5["suggested_fix"])
+        self.assertIn("ip addr replace", check5["command"])
 
     def test_report_mgmt_os_wording(self):
         posix_result = netcheck.MgmtAddressResult(

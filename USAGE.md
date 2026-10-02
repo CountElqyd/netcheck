@@ -758,9 +758,9 @@ mismatch easy to explain.
 [PASS]  1. Local config   - 192.168.1.50 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
 [FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
     Likely cause: A non-gateway DHCP server is handing out leases.
-    Suggested fix: Find the responder's MAC in the device inventory (check 8)
-                   and unplug it; enable DHCP Server Screening (Security) with
-                   192.168.1.1 trusted.
+    Suggested fix: First, determine the device port with the command:
+    uv run --with scapy netcheck.py --inventory
+    Then unplug the rogue device and check its setup.
 [PASS]  8. Device inventory - 139 devices on 5 switches
     dlink1
         port  5   AA:BB:CC:DD:EE:FF  TP-Link
@@ -773,10 +773,13 @@ mismatch easy to explain.
 
 Summary: 2 PASS · 1 WARN · 1 FAIL  (exit code 2)
 Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
+Rogue DHCP found: run --inventory to find its switch port by MAC.
 ```
 
 (Check 9 appears only when you pass `--hardening`.) Each result's cause/fix
-block prints only when at least one is set.
+block prints only when at least one is set. A suggested fix may embed a
+`{command}` line, printed verbatim so it can be pasted directly. On a default
+run, the report ends with the opt-in checks and what each one does.
 
 ---
 

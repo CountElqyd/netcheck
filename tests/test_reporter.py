@@ -156,6 +156,94 @@ class TestReporter(unittest.TestCase):
         self.assertIn("      Suggested fix: check the router", lines)
         self.assertIn(" " * 21 + "retry later", lines)
 
+    def test_command_renders_verbatim_at_body_indent(self):
+        cmd = "sudo ip addr replace 10.90.90.100/24 dev eth0"
+        r = Reporter(color=False)
+        r.add(CheckResult(5, "Switches", Status.WARN,
+                          suggested_fix="Add it:", command=cmd))
+        lines = r.render().splitlines()
+        self.assertIn("      Suggested fix: Add it:", lines)
+        self.assertIn("      " + cmd, lines)
+
+    def test_command_is_not_wrapped_even_when_long(self):
+        cmd = "sudo ip addr replace 10.90.90.100/24 dev eth0 " + "x" * 80
+        r = Reporter(color=False)
+        r.add(CheckResult(5, "Switches", Status.WARN, command=cmd))
+        self.assertIn("      " + cmd, r.render().splitlines())
+
+    def test_command_multiline_renders_each_verbatim(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.WARN,
+                          command="first cmd\nsecond cmd"))
+        lines = r.render().splitlines()
+        self.assertIn("      first cmd", lines)
+        self.assertIn("      second cmd", lines)
+
+    def test_command_omitted_from_quiet(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(5, "Switches", Status.WARN, command="run me"))
+        self.assertNotIn("run me", r.render(quiet=True))
+
+    def test_to_dict_includes_command(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(5, "Switches", Status.WARN, command="run me"))
+        self.assertEqual(r.to_dict()["checks"][0]["command"], "run me")
+
+    def test_placeholder_renders_command_between_prose(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
+                          suggested_fix="First, find the port:\n{command}\nThen unplug.",
+                          command="uv run --with scapy netcheck.py --inventory"))
+        lines = r.render().splitlines()
+        self.assertIn("      Suggested fix: First, find the port:", lines)
+        self.assertIn("      uv run --with scapy netcheck.py --inventory", lines)
+        self.assertIn("      Then unplug.", lines)
+
+    def test_placeholder_command_is_not_wrapped(self):
+        cmd = "uv run --with scapy netcheck.py --inventory " + "x" * 80
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
+                          suggested_fix="Find it:\n{command}\nThen unplug.", command=cmd))
+        self.assertIn("      " + cmd, r.render().splitlines())
+
+    def test_to_dict_substitutes_command_placeholder(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL,
+                          suggested_fix="run:\n{command}", command="do it"))
+        check = r.to_dict()["checks"][0]
+        self.assertNotIn("{command}", check["suggested_fix"])
+        self.assertIn("do it", check["suggested_fix"])
+        self.assertEqual(check["command"], "do it")
+
+    def test_footer_describes_optin_checks(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        text = r.render()
+        self.assertIn("Deeper opt-in checks:", text)
+        self.assertIn("--inventory", text)
+        self.assertIn("--hardening", text)
+        self.assertIn("--sample N", text)
+
+    def test_footer_hidden_when_optin_check_ran(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(8, "Device inventory", Status.PASS, detail="ok"))
+        self.assertNotIn("Deeper opt-in checks:", r.render())
+
+    def test_footer_hidden_in_quiet(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "Local config", Status.PASS, detail="ok"))
+        self.assertNotIn("Deeper opt-in checks:", r.render(quiet=True))
+
+    def test_footer_recommends_inventory_when_rogue(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.FAIL, detail="x"))
+        self.assertIn("Rogue DHCP found: run --inventory", r.render())
+
+    def test_footer_omits_rogue_line_when_no_rogue(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(6, "Rogue DHCP", Status.PASS, detail="ok"))
+        self.assertNotIn("Rogue DHCP found", r.render())
+
     def test_tags_and_titles_align(self):
         r = Reporter(color=False)
         r.add(CheckResult(1, "A", Status.PASS, detail="x"))

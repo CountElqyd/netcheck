@@ -1,5 +1,7 @@
 import builtins
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from netcheck import (
@@ -22,8 +24,8 @@ class TestDhcp(unittest.TestCase):
         self.assertEqual(macs, ["AA:BB:CC:DD:EE:FF"])
         self.assertIn("via scapy", result.detail)
         self.assertNotIn("Trace the responder", result.suggested_fix)
-        self.assertIn("check 8", result.suggested_fix)
-        self.assertIn("inventory", result.suggested_fix)
+        self.assertIn("{command}", result.suggested_fix)
+        self.assertEqual(result.command, "uv run --with scapy netcheck.py --inventory")
 
     def test_clean_passes_with_method(self):
         gw = RogueResponder("192.168.1.1", "00:1E:58:00:00:01", "D-Link")
@@ -40,7 +42,8 @@ class TestDhcp(unittest.TestCase):
         self.assertIs(result.status, Status.WARN)
         self.assertIn("not tested", result.detail)
         self.assertIn("scapy not installed", result.detail)
-        self.assertIn('sudo -E env "PATH=$PATH" uv run', result.suggested_fix)
+        self.assertEqual(result.command, "uv run --with scapy netcheck.py")
+        self.assertNotIn("uv run", result.suggested_fix)
 
     def test_no_responders_warns(self):
         result, _ = check_rogue_dhcp(
@@ -70,6 +73,33 @@ class TestDhcp(unittest.TestCase):
         self.assertIsInstance(probe, DhcpProbe)
         self.assertIsNone(probe.responders)
         self.assertIn("scapy not installed", probe.reason)
+
+    def test_probe_disables_checkipaddr_for_srp(self):
+        class _Stub:
+            def __init__(self, **kwargs):
+                pass
+
+            def __truediv__(self, other):
+                return self
+
+        conf = SimpleNamespace(checkIPaddr=True)
+        seen = {}
+
+        def fake_srp(packet, **kwargs):
+            seen["flag_at_srp"] = conf.checkIPaddr
+            return ([], [])
+
+        fake = SimpleNamespace(
+            DHCP=_Stub, BOOTP=_Stub, Ether=_Stub, IP=_Stub, UDP=_Stub,
+            srp=fake_srp, conf=conf,
+            get_if_hwaddr=lambda iface: "aa:bb:cc:dd:ee:ff")
+
+        with mock.patch.dict(sys.modules, {"scapy": fake, "scapy.all": fake}):
+            probe = scapy_dhcp_discover(iface="eth0")
+
+        self.assertEqual(probe.responders, [])
+        self.assertFalse(seen["flag_at_srp"])
+        self.assertTrue(conf.checkIPaddr)
 
 
 if __name__ == "__main__":

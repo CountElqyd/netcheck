@@ -67,6 +67,7 @@ class CheckResult:
     detail: str = ""
     likely_cause: str = ""
     suggested_fix: str = ""
+    command: str = ""
 
 
 _COLORS = {Status.PASS: "\033[32m", Status.WARN: "\033[33m", Status.FAIL: "\033[31m"}
@@ -116,7 +117,8 @@ class Reporter:
                     "status": r.status.value,
                     "detail": r.detail,
                     "likely_cause": r.likely_cause,
-                    "suggested_fix": r.suggested_fix,
+                    "suggested_fix": r.suggested_fix.replace("{command}", r.command),
+                    "command": r.command,
                 }
                 for r in self.results
             ],
@@ -141,6 +143,25 @@ class Reporter:
             first = False
         return lines
 
+    def _render_fix_with_command(self, value: str, command: str, width: int) -> list[str]:
+        """Render a suggested fix that embeds {command} as verbatim body lines."""
+        pad = _BODY_INDENT
+        initial = f"{pad}Suggested fix: "
+        lines: list[str] = []
+        first = True
+        for raw in _semicolon_lines(value).splitlines():
+            if not raw.strip():
+                lines.append("")
+            elif raw.strip() == "{command}":
+                lines.extend(f"{pad}{cmd}" for cmd in command.splitlines())
+            else:
+                indent = initial if first else pad
+                cont = " " * len(initial) if first else pad
+                lines.extend(textwrap.wrap(raw, width=width, initial_indent=indent,
+                                           subsequent_indent=cont) or [""])
+            first = False
+        return lines
+
     def _render_check(self, r: CheckResult, head: str, title_width: int,
                       width: int, use_color: bool) -> list[str]:
         """Render one check's tag, title, detail, and guidance."""
@@ -153,11 +174,17 @@ class Reporter:
         for label, value in (("Likely cause", r.likely_cause),
                              ("Suggested fix", r.suggested_fix)):
             if value:
+                if label == "Suggested fix" and r.command and "{command}" in value:
+                    lines.extend(self._render_fix_with_command(value, r.command, width))
+                    continue
                 initial = f"{pad}{label}: "
                 indent = " " * len(initial)
                 lines.extend(self._wrap_block(_semicolon_lines(value), width,
                                               initial, indent,
                                               subsequent_initial_indent=indent))
+        if r.command and "{command}" not in r.suggested_fix:
+            for cmd_line in r.command.splitlines():
+                lines.append(f"{pad}{cmd_line}")
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:
@@ -183,6 +210,15 @@ class Reporter:
             if not quiet:
                 lines.append("Legend:  PASS healthy  ·  WARN needs attention  ·  "
                              "FAIL broken — fix FAILs first")
+                if any(r.id == 6 and r.status is Status.FAIL for r in self.results):
+                    lines.append("Rogue DHCP found: run --inventory to find its switch "
+                                 "port by MAC.")
+                if not any(r.id in (8, 9, 10) for r in self.results):
+                    lines.append("")
+                    lines.append("Deeper opt-in checks:")
+                    lines.append("  --inventory   list every device MAC and switch port (check 8)")
+                    lines.append("  --hardening   audit the switch hardening baseline (check 9)")
+                    lines.append("  --sample N    sample storm counters for N seconds (check 10)")
         return "\n".join(lines)
 
 
@@ -1492,7 +1528,7 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
                         iface: str | None = None) -> DhcpProbe:
     """Send a DHCP DISCOVER via scapy and collect responders."""
     try:
-        from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp
+        from scapy.all import DHCP, BOOTP, Ether, IP, UDP, srp, conf
     except ImportError:
         return DhcpProbe(None, "scapy not installed")
     try:
@@ -1501,7 +1537,6 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
         get_if_hwaddr = None
     if iface is None:
         try:
-            from scapy.all import conf
             iface = conf.route.route("10.90.90.90")[0]
         except Exception:  # noqa: BLE001 - scapy routing is best-effort
             iface = None
@@ -1511,6 +1546,12 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
             hwaddr = get_if_hwaddr(iface)
         except Exception:  # noqa: BLE001 - interface lookup is best-effort
             hwaddr = None
+    # scapy's srp() rejects the OFFER unless checkIPaddr is off: the DISCOVER
+    # comes from 0.0.0.0 and the reply targets a broadcast/other address, so
+    # IP.answers(..., checkIPaddr=True) never matches it. scapy's own DHCP
+    # helpers toggle this exact flag.
+    old_check_ipaddr = conf.checkIPaddr
+    conf.checkIPaddr = False
     try:
         # Use the NIC's real MAC and request a broadcast reply (flag 0x8000):
         # servers often unicast the OFFER to chaddr, which a zero MAC never receives.
@@ -1527,6 +1568,8 @@ def scapy_dhcp_discover(timeout: float = 5.0, cfg=None,
     except Exception as exc:  # noqa: BLE001 - scapy raises assorted types
         _diag_exc(cfg)
         return DhcpProbe(None, f"scapy probe failed: {exc}")
+    finally:
+        conf.checkIPaddr = old_check_ipaddr
     found: dict[str, RogueResponder] = {}
     for _sent, received in answered:
         if received.haslayer(DHCP):
@@ -1547,10 +1590,9 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
         return (CheckResult(6, "Rogue DHCP", Status.WARN,
                             detail=f"not tested: {probe.reason}",
                             likely_cause="The rogue-DHCP probe could not run.",
-                            suggested_fix="Install scapy (uv run --with scapy netcheck.py) and "
-                                          "grant raw-socket rights: sudo -E env \"PATH=$PATH\" "
-                                          "uv run --with scapy netcheck.py, or sudo setcap "
-                                          "cap_net_raw+ep \"$(readlink -f \"$(command -v python3)\")\"."),
+                            suggested_fix="Install scapy and grant raw-socket rights, "
+                                          "then run elevated (root/Administrator):",
+                            command="uv run --with scapy netcheck.py"),
                 [])
     responders = probe.responders
     if not responders:
@@ -1572,9 +1614,10 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
                         for r in rogues)
     return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=f"via scapy: {listing}",
                         likely_cause="A non-gateway DHCP server is handing out leases.",
-                        suggested_fix="Find the responder in the device inventory "
-                                      "(check 8, --inventory) and unplug it; enable "
-                                      "DHCP Server Screening on access ports."),
+                        suggested_fix="First, determine the device port with the command:\n"
+                                      "{command}\n"
+                                      "Then unplug the rogue device and check its setup.",
+                        command="uv run --with scapy netcheck.py --inventory"),
             [r.mac for r in rogues if r.mac])
 
 
@@ -2335,14 +2378,16 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
         assert mgmt.command is not None
         cmd = format_command(mgmt.command)
         if sys.platform.startswith("win"):
-            fix = f"Run as Administrator, then run netcheck again: {cmd}"
+            fix = "Run as Administrator, then run netcheck again:"
+            command = cmd
         else:
-            fix = f"Add it, then run netcheck again: sudo {cmd}"
+            fix = "Add it, then run netcheck again:"
+            command = f"sudo {cmd}"
         reporter.add(CheckResult(
             check_id, title, Status.WARN,
             detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
             likely_cause="The laptop has no address on the switch-management LAN.",
-            suggested_fix=fix))
+            suggested_fix=fix, command=command))
         return False
 
     def _optin_checks() -> None:

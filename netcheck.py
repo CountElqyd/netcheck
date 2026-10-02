@@ -969,12 +969,14 @@ def parse_dns_a(data: bytes) -> list[str]:
     return answers
 
 
-def dns_query(server: str, name: str, timeout: float = 3.0) -> tuple[bool, float, list[str]]:
+def dns_query(server: str, name: str, timeout: float = 3.0, source: str | None = None) -> tuple[bool, float, list[str]]:
     txid = random.randint(0, 0xFFFF)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     started = time.monotonic()
     try:
+        if source:
+            sock.bind((source, 0))
         sock.sendto(build_dns_query(name, txid), (server, 53))
         data, _ = sock.recvfrom(2048)
     except OSError:

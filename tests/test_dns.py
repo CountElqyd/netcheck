@@ -1,7 +1,8 @@
 import struct
 import unittest
+from unittest import mock
 
-from netcheck import build_dns_query, parse_dns_a
+from netcheck import build_dns_query, dns_query, parse_dns_a
 
 
 def _response(txid: int, name: str, ip: bytes) -> bytes:
@@ -38,6 +39,23 @@ class TestDns(unittest.TestCase):
         q = b"\x07example\x03com\x00" + struct.pack(">HH", 1, 1)
         answer = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + b"\x5d\xb8"
         self.assertEqual(parse_dns_a(header + q + answer), [])
+
+    def test_dns_query_binds_source(self):
+        with mock.patch("netcheck.socket.socket") as sock_cls:
+            sock = sock_cls.return_value
+            sock.recvfrom.side_effect = OSError("no reply")
+            ok, _ms, answers = dns_query("1.1.1.1", "example.com",
+                                         source="192.168.1.50")
+            self.assertFalse(ok)
+            self.assertEqual(answers, [])
+            sock.bind.assert_called_once_with(("192.168.1.50", 0))
+
+    def test_dns_query_without_source_does_not_bind(self):
+        with mock.patch("netcheck.socket.socket") as sock_cls:
+            sock = sock_cls.return_value
+            sock.recvfrom.side_effect = OSError("no reply")
+            dns_query("1.1.1.1", "example.com")
+            sock.bind.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1200,11 +1200,21 @@ def parse_macos(route_text: str, dns_text: str, ifaddr: str) -> LocalConfig:
     return lc
 
 
+def parse_windows_dns(text: str) -> list[str]:
+    """Every DNS server across all adapters in ``ipconfig /all`` output."""
+    servers: list[str] = []
+    for block in re.findall(r"DNS Servers[^:]*:\s*((?:[\d.\s])+)", text):
+        for ip in re.findall(r"\d+\.\d+\.\d+\.\d+", block):
+            if ip not in servers:
+                servers.append(ip)
+    return servers
+
+
 def read_dns_servers(runner=run_command) -> list[str]:
     """Return the system's configured DNS servers."""
     if sys.platform.startswith("win"):
         _, out, _ = runner(["ipconfig", "/all"])
-        return parse_ipconfig_windows(out).dns
+        return parse_windows_dns(out) or parse_ipconfig_windows(out).dns
     if sys.platform == "darwin":
         _, out, _ = runner(["scutil", "--dns"])
         return re.findall(r"nameserver\[[^\]]+\]\s*:\s*([\d.]+)", out)

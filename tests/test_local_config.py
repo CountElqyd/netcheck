@@ -12,6 +12,7 @@ from netcheck import (
     office_network,
     parse_ipconfig_windows,
     parse_linux,
+    parse_windows_dns,
 )
 
 
@@ -70,6 +71,22 @@ class TestLocalConfig(unittest.TestCase):
 
 
 class TestWiredCheckOne(unittest.TestCase):
+    def test_windows_dns_aggregates_all_adapters(self):
+        text = (
+            "Ethernet adapter Ethernet:\n"
+            "   DNS Servers . . . . . . . . . . . : 58.71.2.8\n"
+            "                                       45.63.30.117\n"
+            "Ethernet adapter Wi-Fi:\n"
+            "   DNS Servers . . . . . . . . . . . : 192.168.68.1\n"
+        )
+        self.assertEqual(parse_windows_dns(text),
+                         ["58.71.2.8", "45.63.30.117", "192.168.68.1"])
+
+    def test_windows_dns_deduplicates(self):
+        text = ("DNS Servers . . . . . . . . . . . : 1.1.1.1\n"
+                "DNS Servers . . . . . . . . . . . : 1.1.1.1\n")
+        self.assertEqual(parse_windows_dns(text), ["1.1.1.1"])
+
     def _lan(self, ip):
         return LanInterface("eth0", ip, [InterfaceAddr(ip, 24)])
 

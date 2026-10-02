@@ -673,10 +673,17 @@ def run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
         return 1, "", str(exc)
 
 
-def ping_argv(host: str, count: int) -> list[str]:
+def ping_argv(host: str, count: int, source: str | None = None) -> list[str]:
     if sys.platform.startswith("win"):
-        return ["ping", "-n", str(count), host]
-    return ["ping", "-c", str(count), host]
+        argv = ["ping", "-n", str(count)]
+        if source:
+            argv += ["-S", source]
+    else:
+        argv = ["ping", "-c", str(count)]
+        if source:
+            argv += (["-I", source] if sys.platform == "linux" else ["-S", source])
+    argv.append(host)
+    return argv
 
 
 _MGMT_NETWORK = ipaddress.ip_network("10.90.90.0/24")
@@ -912,8 +919,9 @@ def parse_ping_output(host: str, output: str) -> PingResult:
 
 
 def ping(host: str, count: int = 10, timeout: float = 3.0,
-         runner=run_command) -> PingResult:
-    _, out, _ = runner(ping_argv(host, count), timeout=count * timeout + 5)
+         runner=run_command, source: str | None = None) -> PingResult:
+    _, out, _ = runner(ping_argv(host, count, source=source),
+                       timeout=count * timeout + 5)
     return parse_ping_output(host, out)
 
 

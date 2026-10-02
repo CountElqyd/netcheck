@@ -57,6 +57,20 @@ class TestPing(unittest.TestCase):
         with mock.patch("sys.platform", "darwin"):
             self.assertEqual(ping_argv("8.8.8.8", 3), ["ping", "-c", "3", "8.8.8.8"])
 
+    def test_ping_argv_with_source_per_platform(self):
+        with mock.patch("sys.platform", "linux"):
+            self.assertEqual(
+                ping_argv("8.8.8.8", 3, source="192.168.1.50"),
+                ["ping", "-c", "3", "-I", "192.168.1.50", "8.8.8.8"])
+        with mock.patch("sys.platform", "darwin"):
+            self.assertEqual(
+                ping_argv("8.8.8.8", 3, source="192.168.1.50"),
+                ["ping", "-c", "3", "-S", "192.168.1.50", "8.8.8.8"])
+        with mock.patch("sys.platform", "win32"):
+            self.assertEqual(
+                ping_argv("8.8.8.8", 3, source="192.168.1.50"),
+                ["ping", "-n", "3", "-S", "192.168.1.50", "8.8.8.8"])
+
     def test_ping_uses_injected_runner(self):
         seen = {}
 

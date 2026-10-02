@@ -79,15 +79,21 @@ class Reporter:
         }
 
     def _wrap_block(self, value: str, width: int, initial_indent: str,
-                    subsequent_indent: str) -> list[str]:
+                    subsequent_indent: str,
+                    subsequent_initial_indent: str | None = None) -> list[str]:
+        if subsequent_initial_indent is None:
+            subsequent_initial_indent = initial_indent
         lines: list[str] = []
+        first = True
         for raw in value.splitlines():
             if not raw.strip():
                 lines.append("")
-                continue
-            lines.extend(textwrap.wrap(raw, width=width,
-                                       initial_indent=initial_indent,
-                                       subsequent_indent=subsequent_indent) or [""])
+            else:
+                indent = initial_indent if first else subsequent_initial_indent
+                lines.extend(textwrap.wrap(raw, width=width,
+                                           initial_indent=indent,
+                                           subsequent_indent=subsequent_indent) or [""])
+            first = False
         return lines
 
     def _render_check(self, r: CheckResult, head: str, title_width: int,
@@ -102,7 +108,8 @@ class Reporter:
             if value:
                 indent = " " * (5 + len(label) + 2)
                 lines.extend(self._wrap_block(value, width,
-                                              f"    {label}: ", indent))
+                                              f"    {label}: ", indent,
+                                              subsequent_initial_indent=indent))
         return lines
 
     def render(self, color: bool | None = None, quiet: bool = False) -> str:

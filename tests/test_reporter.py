@@ -130,6 +130,16 @@ class TestReporter(unittest.TestCase):
         self.assertIn("\n      dlink1", text)
         self.assertIn("\n          port 5  AA:BB", text)
 
+    def test_multiline_cause_labels_once_and_aligns(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.FAIL,
+                          likely_cause="first line\nsecond line"))
+        lines = r.render().splitlines()
+        causes = [ln for ln in lines if "Likely cause:" in ln]
+        self.assertEqual(len(causes), 1)
+        idx = lines.index("    Likely cause: first line")
+        self.assertEqual(lines[idx + 1], " " * 19 + "second line")
+
 
 if __name__ == "__main__":
     unittest.main()

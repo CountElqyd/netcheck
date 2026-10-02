@@ -17,3 +17,8 @@ storm_floor_kbps = 10000
 # downstream uplinks are single ports.
 uplink_ports = 23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25
 switches = dlink1=10.90.90.90,dlink2=10.90.90.91,dlink3=10.90.90.92,dlink4=10.90.90.93,dlink5=10.90.90.94
+# Transient switch-management address: netcheck prompts, adds this on the wired
+# NIC before checks 5-9, and removes it when done. Override the NIC autodetect
+# (normally the NIC holding 192.168.1.x or 10.90.90.x) with lan_interface.
+mgmt_address = 10.90.90.100
+# lan_interface = eth0

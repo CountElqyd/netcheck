@@ -45,20 +45,16 @@ git clone https://github.com/CountElqyd/netcheck.git
 cd netcheck
 ```
 
-**2. Add the switch management address.** Checks 5–9 reach the switches on
-`10.90.90.90`–`10.90.90.94`; add a secondary address in that range to your LAN NIC —
-your normal `192.168.1.0/24` lease is unaffected.
+**2. Wired LAN + switch management address.** Checks 1–4 use the wired NIC's
+`192.168.1.x` address; checks 5–9 need a `10.90.90.x` address. netcheck
+auto-detects the wired NIC (the one holding `192.168.1.x` or `10.90.90.x`) —
+Wi-Fi can stay connected and keeps the default route. Before checks 5–9, if the
+`10.90.90.x` address is missing, netcheck prompts and adds `10.90.90.100/24` to
+that NIC, then **removes it when the run ends**. If it cannot add the address it
+prints the exact command to run as root/Administrator and continues.
 
-```bash
-# Linux (replace eth0; list with `ip link`)
-sudo ip addr add 10.90.90.100/8 dev eth0
-
-# macOS (replace en0; list with `networksetup -listallhardwareports`)
-sudo ifconfig en0 alias 10.90.90.100 255.0.0.0
-
-# Windows, as Administrator (replace "Ethernet"; list with `netsh interface show interface`)
-netsh interface ipv4 add address "Ethernet" 10.90.90.100 255.0.0.0
-```
+To set it up manually instead (or force the NIC), use `lan_interface` in
+`netcheck.ini` and run e.g. `sudo ip addr add 10.90.90.100/24 dev eth0`.
 
 **3. Configure** (secrets stay out of git — the real file is gitignored)
 
@@ -81,7 +77,7 @@ admin/root or `scapy`, check 6 reports `WARN: not tested`; run
 
 | # | Check | What it does |
 |---|---|---|
-| 1 | Local config | IP, mask, gateway, DNS; flags APIPA or a non-`192.168.1.1` gateway |
+| 1 | Local config | Wired NIC IP, mask, gateway, DNS; flags APIPA or a wired NIC not on `192.168.1.0/24` |
 | 2 | Gateway | Pings `192.168.1.1` (loss %, latency, jitter) |
 | 3 | Internet by IP | Pings `1.1.1.1` and `8.8.8.8` |
 | 4 | DNS | Resolves a test domain on ISP DNS and public DNS |

@@ -240,21 +240,20 @@ pre-installed Python.
 
 ### 3.3 Reachability to the switch management subnet
 
-The switches live on `10.90.90.0/8`. Add a **secondary IPv4 address** in that
-range to the laptop NIC so `10.90.90.90`–`10.90.90.94` answer:
+The switches live on `10.90.90.0/8`. netcheck auto-detects the wired NIC — the
+one holding `192.168.1.x` or `10.90.90.x` — and pins checks 5–9 to it. Wi-Fi can
+stay connected and keeps the default route; force a specific NIC with
+`lan_interface` in `netcheck.ini`.
 
-```bash
-# Linux (replace eth0 with your interface)
-sudo ip addr add 10.90.90.100/8 dev eth0
+Before checks 5–9, if that NIC has no `10.90.90.x` address, netcheck prompts and
+adds `10.90.90.100/24` as a secondary address, then **removes it when the run
+ends** (if netcheck added it). If the address cannot be added, it prints the
+exact root/Administrator command and continues. `--remove-mgmt-ip` removes a
+leftover transient address and exits.
 
-# macOS (replace en0)
-sudo ifconfig en0 alias 10.90.90.100 255.0.0.0
-```
-
-```powershell
-# Windows PowerShell (run as Administrator) — replace "Ethernet"
-New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 10.90.90.100 -PrefixLength 8
-```
+To add it manually instead, on Linux run `sudo ip addr add 10.90.90.100/24 dev
+eth0` (replace `eth0`; macOS: `sudo ifconfig en0 alias 10.90.90.100
+255.255.255.0`).
 
 Verify with a ping to one switch management IP before running the tool.
 
@@ -660,7 +659,7 @@ fixes (§10).
 
 | # | Check | What it does | PASS / WARN / FAIL |
 |---|---|---|---|
-| 1 | Local config | Reads IP, mask, gateway, DNS | FAIL: no IP, APIPA (`169.254.x.x`), or gateway ≠ `192.168.1.1`. WARN: no DNS servers |
+| 1 | Local config | Reads wired NIC IP, mask, gateway, DNS | FAIL: no IP, APIPA (`169.254.x.x`), or wired NIC not on `192.168.1.0/24`. WARN: no DNS servers. A Wi-Fi-primary host whose wired NIC is on `192.168.1.0/24` stays PASS |
 | 2 | Gateway | Pings `192.168.1.1` (10 packets) | FAIL: 100% loss. WARN: >20% loss or jitter >30 ms. FAIL skips 3–4 |
 | 3 | Internet by IP | Pings `1.1.1.1` and `8.8.8.8` | PASS: both. WARN: one. FAIL: neither |
 | 4 | DNS | Resolves the test domain on ISP DNS and public DNS | FAIL: public works but ISP fails (**ISP DNS problem**). WARN: ISP works, public fails. FAIL: none |

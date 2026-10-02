@@ -25,6 +25,12 @@ class TestDocs(unittest.TestCase):
         self.assertEqual(cfg.storm_safety_factor, 4)
         self.assertEqual(cfg.storm_floor_kbps, 10000)
 
+    def test_example_config_lists_mgmt_keys(self):
+        with open("netcheck.ini.example") as fh:
+            text = fh.read()
+        self.assertIn("mgmt_address", text)
+        self.assertIn("lan_interface", text)
+
 
 if __name__ == "__main__":
     unittest.main()

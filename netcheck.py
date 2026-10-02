@@ -13,7 +13,7 @@ import shutil
 import sys
 import textwrap
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 import enum
@@ -138,10 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log", action="store_true", help="save a timestamped report")
     parser.add_argument("--config", default="netcheck.ini", help="path to an INI config file")
     parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
-    parser.add_argument("--sample", type=_positive_float, default=30.0,
-                        help="counter-sampling window for storm thresholds (seconds)")
-    parser.add_argument("--no-measure", action="store_true",
-                        help="skip rate sampling; use the static storm baseline")
+    parser.add_argument("--sample", type=_positive_float, default=None, metavar="SECONDS",
+                        help="sample storm counters and print per-switch threshold "
+                             "recommendations (also feeds --hardening)")
+    parser.add_argument("--hardening", action="store_true",
+                        help="run the opt-in hardening audit (check 9)")
     parser.add_argument("--timeout", type=_positive_float, default=3.0,
                         help="per-operation network timeout (seconds)")
     parser.add_argument("--verbose", action="store_true",
@@ -175,8 +176,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg.verbose = args.verbose
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
-        run_all(cfg, reporter, quick=args.quick, no_measure=args.no_measure,
-                sample=args.sample, allow_fix=not args.no_fix, verbose=args.verbose)
+        run_all(cfg, reporter, quick=args.quick, sample=args.sample,
+                hardening=args.hardening, allow_fix=not args.no_fix,
+                verbose=args.verbose)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -1568,6 +1570,21 @@ def measure_storm_threshold(cfg: Config, sample_seconds: float = 30,
                 if data}
 
 
+def format_threshold_samples(measured: dict[str, dict]) -> CheckResult:
+    """Render per-switch storm-threshold recommendations as a check result."""
+    if not measured:
+        return CheckResult(10, "Storm thresholds", Status.WARN,
+                           detail="no samples collected (SNMP unavailable or sampling skipped)",
+                           likely_cause="SNMP did not answer, or no switches configured.",
+                           suggested_fix="Check SNMP reachability, then re-run with --sample.")
+    lines = []
+    for name in sorted(measured):
+        kbps = measured[name].get("threshold", 0)
+        lines.append(f"{name}: {kbps} Kbit/s (N={kbps_to_n(kbps)})")
+    return CheckResult(10, "Storm thresholds", Status.PASS,
+                       detail="set Threshold (64Kbps x N): " + "; ".join(lines))
+
+
 from typing import TextIO
 
 
@@ -1627,8 +1644,9 @@ def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
 
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
-            no_measure: bool = False, sample: float = 30.0, allow_fix: bool = True,
-            tty=None, runner=run_command, verbose: bool = False) -> None:
+            sample: float | None = None, hardening: bool = False,
+            allow_fix: bool = True, tty=None, runner=run_command,
+            verbose: bool = False) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
         _diag(cfg, f"check {check_id}: {title}")
         try:
@@ -1647,7 +1665,7 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
     _diag(cfg, f"gateway={cfg.gateway} dns={','.join(cfg.dns_servers)} "
                f"domain={cfg.domain} timeout={cfg.timeout} "
                f"switches={len(cfg.switches)} sample={sample} "
-               f"quick={quick} no_measure={no_measure}")
+               f"quick={quick} hardening={hardening}")
     _diag(cfg, "snmp_community=" + ("set" if cfg.snmp_community else "not set"))
 
     try:
@@ -1673,12 +1691,19 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(6, "Rogue DHCP", _rogue)
 
-        def _hardening() -> None:
-            measured = ({} if no_measure
-                        else measure_storm_threshold(cfg, sample_seconds=sample))
-            reporter.add(check_hardening(cfg, measured=measured))
+        if sample is not None:
+            def _sample_only() -> None:
+                measured = measure_storm_threshold(cfg, sample_seconds=sample)
+                reporter.add(format_threshold_samples(measured))
+            _run_check(10, "Storm thresholds", _sample_only)
 
-        _run_check(9, "Hardening audit", _hardening)
+        if hardening:
+            def _hardening() -> None:
+                measured = (measure_storm_threshold(cfg, sample_seconds=sample)
+                            if sample is not None else {})
+                reporter.add(check_hardening(cfg, measured=measured))
+
+            _run_check(9, "Hardening audit", _hardening)
 
         def _storm() -> None:
             gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout, runner=runner)

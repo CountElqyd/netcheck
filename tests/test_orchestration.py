@@ -15,10 +15,16 @@ class TestOrchestration(unittest.TestCase):
 
     def test_parser_has_flags(self):
         parser = netcheck.build_parser()
-        args = parser.parse_args(["--quick", "--no-measure", "--no-fix"])
+        args = parser.parse_args(["--quick", "--hardening", "--no-fix"])
         self.assertTrue(args.quick)
-        self.assertTrue(args.no_measure)
+        self.assertTrue(args.hardening)
         self.assertTrue(args.no_fix)
+
+    def test_sample_defaults_to_none(self):
+        self.assertIsNone(netcheck.build_parser().parse_args([]).sample)
+
+    def test_hardening_defaults_off(self):
+        self.assertFalse(netcheck.build_parser().parse_args([]).hardening)
 
     def test_sample_and_timeout_reject_non_positive(self):
         parser = netcheck.build_parser()
@@ -50,7 +56,7 @@ class TestOrchestration(unittest.TestCase):
         netcheck.check_rogue_dhcp = lambda *a, **k: (
             netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
         try:
-            netcheck.run_all(netcheck.Config(), reporter, no_measure=True,
+            netcheck.run_all(netcheck.Config(), reporter, hardening=True,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             netcheck.check_switches = orig_switches
@@ -66,6 +72,36 @@ class TestOrchestration(unittest.TestCase):
         check7 = next(r for r in reporter.results if r.id == 7)
         self.assertIs(check7.status, netcheck.Status.WARN)
 
+    def test_check9_absent_by_default(self):
+        reporter = netcheck.Reporter(color=False)
+        orig_rogue = netcheck.check_rogue_dhcp
+        netcheck.check_rogue_dhcp = lambda *a, **k: (
+            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
+        try:
+            netcheck.run_all(netcheck.Config(), reporter,
+                             runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.check_rogue_dhcp = orig_rogue
+        self.assertNotIn(9, [r.id for r in reporter.results])
+
+    def test_sample_emits_threshold_check(self):
+        reporter = netcheck.Reporter(color=False)
+        orig_measure = netcheck.measure_storm_threshold
+        orig_rogue = netcheck.check_rogue_dhcp
+        netcheck.measure_storm_threshold = lambda cfg, sample_seconds=0, **k: {
+            "dlink1": {"threshold": 20032}}
+        netcheck.check_rogue_dhcp = lambda *a, **k: (
+            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, sample=0.01,
+                             runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.measure_storm_threshold = orig_measure
+            netcheck.check_rogue_dhcp = orig_rogue
+        check10 = [r for r in reporter.results if r.id == 10]
+        self.assertEqual(len(check10), 1)
+        self.assertIn("N=313", check10[0].detail)
+
     def test_check7_always_emits_inventory(self):
         reporter = netcheck.Reporter(color=False)
         orig = netcheck.check_device_inventory
@@ -75,7 +111,7 @@ class TestOrchestration(unittest.TestCase):
         netcheck.check_rogue_dhcp = lambda *a, **k: (
             netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
         try:
-            netcheck.run_all(netcheck.Config(), reporter, no_measure=True,
+            netcheck.run_all(netcheck.Config(), reporter,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             netcheck.check_device_inventory = orig
@@ -160,9 +196,9 @@ class TestOrchestration(unittest.TestCase):
         loud = io.StringIO()
         quiet = io.StringIO()
         with contextlib.redirect_stderr(loud):
-            netcheck.check_hardening(loud_cfg, client_factory=boom)
+            netcheck.check_device_inventory(loud_cfg, [], client_factory=boom)
         with contextlib.redirect_stderr(quiet):
-            netcheck.check_hardening(quiet_cfg, client_factory=boom)
+            netcheck.check_device_inventory(quiet_cfg, [], client_factory=boom)
         self.assertIn("Traceback", loud.getvalue())
         self.assertIn("kaboom", loud.getvalue())
         self.assertNotIn("Traceback", quiet.getvalue())

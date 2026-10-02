@@ -3,7 +3,7 @@
 A single-file, read-only CLI that diagnoses *why the internet is broken* on the
 office network, then audits the D-Link DGS-1210 switch fabric for the conditions
 that cause intermittent outages: rogue DHCP servers, loops/broadcast storms, and
-switch settings that drift below a hardening baseline.
+(opt-in) switch settings that drift below a hardening baseline.
 
 > **Read-only guarantee.** `netcheck` never changes the ISP router and never
 > writes switch configuration (no SNMP SET, no CLI `config`/`save`). It only reads
@@ -89,7 +89,8 @@ admin/root or `scapy`, check 6 reports `WARN: not tested`; run
 | 6 | Rogue DHCP | scapy broadcast discover; flags any non-gateway responder |
 | 7 | Device inventory | SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports are hidden) |
 | 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter |
-| 9 | Hardening audit | Read-only per-switch audit vs the hardening baseline |
+| 9 | Hardening audit | **Opt-in** (`--hardening`): read-only per-switch audit vs the hardening baseline |
+| 10 | Storm thresholds | **Opt-in** (`--sample SECONDS`): per-switch storm-threshold recommendations |
 
 Exit codes: `0` clean, `1` at least one `WARN`, `2` at least one `FAIL`. The
 operator guide lists every check's exact criteria, the sample output, scenario

@@ -148,8 +148,8 @@ Strict tree — there are no redundant links. Management IPs are `10.90.90.90`
 
 > **One-time prerequisite:** complete [§4.3](#43-enable-snmp-read-only) (enable a
 > read-only SNMP community on all five switches) before taking the baseline.
-> Without it, check 9 reports `SNMP community not set` and check 7 cannot list
-> devices. The storm measurement also requires SNMP.
+> Without it, check 7 cannot list devices and the opt-in storm measurement has
+> nothing to read.
 
 ### 2.1 Capture a connectivity baseline
 
@@ -161,17 +161,19 @@ python3 netcheck.py --quick --log  # connectivity layers only (checks 1-4)
 ```
 
 Keep the logs. A healthy baseline should show `[PASS]` on checks 1–5, `[PASS]`
-on 6 (only the gateway answers DHCP), `[PASS]` on 8, and either `[PASS]` on 9
-(already hardened) or `[WARN]` listing what is below baseline.
+on 6 (only the gateway answers DHCP), and `[PASS]` on 8. The hardening audit
+(check 9) is **opt-in** (`--hardening`) and the storm measurement is opt-in
+(`--sample`, §2.2).
 
-### 2.2 Measure the storm-control rates
+### 2.2 Measure the storm-control rates (opt-in)
 
-Run the full tool and let it sample. The measurement is read-only: it polls each
-switch's broadcast and multicast counters twice, `--sample` seconds apart, in
-parallel across switches.
+Storm sampling is **off by default**. Enable it with `--sample SECONDS`; the tool
+then prints a per-switch recommendation (check 10) instead of guessing. The
+measurement is read-only: it polls each switch's broadcast and multicast counters
+twice, `--sample` seconds apart, in parallel across switches.
 
 ```bash
-python3 netcheck.py --sample 30      # quick sample (default window)
+python3 netcheck.py --sample 30      # quick sample
 python3 netcheck.py --sample 300     # 5-minute sample, use during peak hours
 ```
 
@@ -198,9 +200,8 @@ Guidance:
 - The tool samples every switch and reports a **per-switch** recommendation.
 - Convert the recommendation to the web-UI field: it is `64Kbps × N`, so
   **`N = round(recommended Kbit/s / 64)`** (`N` = 1–16000). See §5.3.
-- `--no-measure` skips sampling and falls back to the static baseline,
-  **N = 313** (20,032 Kbit/s) on access ports (see §5.3). Use it when SNMP is
-  unavailable.
+- With `--hardening`, `--sample` also feeds the audit; without it, the audit
+  compares against the static fallback **N = 313** (20,032 Kbit/s) — see §5.3.
 
 Record the recommended threshold per switch in the worksheet (Appendix A).
 
@@ -208,7 +209,7 @@ Record the recommended threshold per switch in the worksheet (Appendix A).
 
 1. Baseline: save a `--log` run from §2.1 **before** changing switch settings.
 2. Apply the hardening configuration (§5), one switch at a time.
-3. Re-run `python3 netcheck.py --log` after each switch and after the last one.
+3. Re-run `python3 netcheck.py --hardening --log` after each switch.
 4. Diff the logs. Expected outcome: check 9 stops reporting findings for the
    switches you fixed, checks 1–8 stay `[PASS]`, and no new `[WARN]`/`[FAIL]`
    appears elsewhere. A transient extra `[WARN]` right after a change is usually
@@ -354,9 +355,9 @@ if the default is still in use.
 ### 4.3 Enable SNMP (read-only)
 
 SNMP is **disabled by default**, and the tool needs it to read switch state for
-the hardening audit (check 9) and the device inventory (check 7). Configure each
-switch as follows, then repeat steps 2–3 on all five using the **same** community
-string.
+the device inventory (check 7), the opt-in hardening audit (check 9), and the
+opt-in storm measurement (check 10). Configure each switch as follows, then
+repeat steps 2–3 on all five using the **same** community string.
 
 1. **Enable SNMP globally.** `SNMP > SNMP > SNMP Global Settings` → select
    **Enable** → **Apply**. (The Smart Wizard's "SNMP" step toggles the same global
@@ -376,9 +377,8 @@ string.
    leave it empty — the tool polls, it does not listen for traps.
 5. **Point the tool at it.** Set `snmp_community = netcheck-ro` in
    `netcheck.ini`, or export `NETCHECK_SNMP_COMMUNITY=netcheck-ro`.
-6. **Verify.** Run `python3 netcheck.py --no-fix`; check 9 must stop saying
-   `SNMP community not set` / `SNMP unavailable`. With net-snmp installed you can
-   also probe directly:
+6. **Verify.** Run `python3 netcheck.py --no-fix`; check 7 must list devices.
+   With net-snmp installed you can also probe directly:
 
    ```bash
    snmpget -v2c -c netcheck-ro 10.90.90.90 1.3.6.1.2.1.1.1.0
@@ -393,12 +393,13 @@ Notes:
 - **What the tool reads:** interface counters, the bridge/Q-BRIDGE forwarding
   tables, and D-Link private objects under `1.3.6.1.4.1.171…` — the read-only
   view above covers all of them.
-- **If check 9 reports "hardening MIB not exposed by this firmware."** The switch
-  answered SNMP but returned `noSuchObject` for the hardening objects (this tool
-  reads them with their scalar `.0` instance). That happens when the community's
-  view excludes `1.3.6.1.4.1.171` (fix: step 3 above) or when the firmware does
-  not implement those objects. The audit then reports the features as
-  **unauditable** rather than guessing. Verify a single object directly:
+- **If check 9 (with `--hardening`) reports "hardening MIB not exposed by this
+  firmware."** The switch answered SNMP but returned `noSuchObject` for the
+  hardening objects (this tool reads them with their scalar `.0` instance). That
+  happens when the community's view excludes `1.3.6.1.4.1.171` (fix: step 3
+  above) or when the firmware does not implement those objects. The audit then
+  reports the features as **unauditable** rather than guessing. Verify a single
+  object directly:
   `snmpget -v2c -c netcheck-ro 10.90.90.90 1.3.6.1.4.1.171.10.76.20.1.1.8.0`
   (Safeguard Engine state; returns an integer, not `noSuchObject`).
 - **Security:** use a read-only community distinct from the admin password and
@@ -426,10 +427,10 @@ reboot.
 ## 5. Switch hardening configuration (web UI)
 
 All settings below are applied by hand in the web UI and verified read-only by
-the tool's check 9. Apply them to **all five switches** unless a row says
-otherwise. Do a **staged rollout**: configure dlink2–dlink5 first, then dlink1,
-or one switch at a time, re-running the tool after each to confirm checks stay
-green.
+the tool's opt-in check 9 (`--hardening`). Apply them to **all five switches**
+unless a row says otherwise. Do a **staged rollout**: configure dlink2–dlink5
+first, then dlink1, or one switch at a time, re-running the tool after each to
+confirm checks stay green.
 
 > **Brief disruption is expected** when enabling STP or shutting a looped port.
 > Schedule changes for a quiet period.
@@ -558,9 +559,9 @@ Check 9 therefore verifies only what SNMP exposes:
 - `DHCP Server Screening: disabled` — the global screening state is off.
 - `no trusted DHCP server IP configured` — the trusted-server list is empty.
 
-Run `python3 netcheck.py --verbose --no-fix`; check 9 prints `DHCP screening
-enabled=… ; trusted servers …`. Confirm the per-port trust in the web UI and use
-**check 6** (rogue DHCP) for actual rogue detection.
+Run `python3 netcheck.py --hardening --verbose --no-fix`; check 9 prints `DHCP
+screening enabled=… ; trusted servers …`. Confirm the per-port trust in the web
+UI and use **check 6** (rogue DHCP) for actual rogue detection.
 
 **Why:** prevents a rogue DHCP server on an access port from handing out leases.
 The tool's check 6 detects rogues; screening stops the next one.
@@ -666,12 +667,14 @@ fixes (§10).
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
 | 6 | Rogue DHCP | scapy broadcast discover (5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
 | 7 | Device inventory | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch, always in full. Ports in `uplink_ports` (other switches/the router) and duplicate MACs are hidden | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder. WARN: SNMP not configured or no switch returned an FDB |
-| 8 | Loop/storm hints | LBD loop ports + gateway loss/jitter | FAIL: a port is in loop state. WARN: loss >5% or jitter >30 ms. PASS: quiet |
-| 9 | Hardening audit | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. FAIL: a port in loop state. WARN: findings or SNMP unavailable |
+| 8 | Loop/storm hints | Gateway loss/jitter heuristics | WARN: loss >5% or jitter >30 ms. PASS: quiet |
+| 9 | Hardening audit *(opt-in, `--hardening`)* | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. WARN: findings, SNMP unavailable, or MIB not exposed |
+| 10 | Storm thresholds *(opt-in, `--sample SECONDS`)* | Samples per-switch storm counters and prints the recommended `64Kbps × N` | PASS: per-switch recommendation printed. WARN: no samples collected |
 | 99 | Fixes applied | Present only if you accepted a fix | — |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
-**Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 9, 8, 7.
+**Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, then the
+opt-in 10 (`--sample`) and 9 (`--hardening`), then 8, 7.
 Check 7 always prints the full per-switch device table, but shows only end devices:
 FDB entries learned on `uplink_ports` (cascade/uplink ports) are hidden, and a MAC
 seen on more than one access port is listed once, on the least-populated port. Rows
@@ -705,8 +708,8 @@ Summary: 1 PASS · 1 WARN · 2 FAIL  (exit code 2)
 Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
 ```
 
-Each result's cause/fix block prints only when at least one is set; a missing
-line shows `-`.
+(Check 9 appears only when you pass `--hardening`.) Each result's cause/fix
+block prints only when at least one is set.
 
 ---
 
@@ -729,20 +732,19 @@ vendor. Check 7 lists the device table and marks the rogue MAC's switch and port
 Unplug that device, then confirm DHCP Server Screening is enabled with
 `192.168.1.1` trusted (§5.5).
 
-**Loop or storm (check 8 FAIL, or check 9 loop port).** A port is in loop state.
-Trace it to the switch/port, unplug the cable (or the looped unmanaged switch),
-then re-check hardening. Check 8 also warns on gateway loss >5% or jitter
->30 ms — corroborate with the LBD loop status and error/broadcast counters before
-declaring a storm.
+**Loop or storm (check 8 WARN).** Check 8 warns on gateway loss >5% or jitter
+>30 ms — corroborate with LBD loop status in the web UI (`L2 Functions > Loopback
+Detection`) and with error/broadcast counters before declaring a storm. Trace the
+looped port, unplug the cable (or the looped unmanaged switch), then re-check.
 
 **A switch is unreachable (check 5 WARN).** The hint names the likely cascade
 port on dlink1 (`dlink2`→24, `dlink3`→25, `dlink4`→26, `dlink5`→27). Reseat that
 cable and confirm the management IP. `dlink1` unreachable points at the
 management path or switch 1 itself.
 
-**Hardening below baseline (check 9 WARN).** The detail lists every finding per
-switch with the recommended value. Apply §5 to the named features, save, and
-re-run.
+**Hardening below baseline (check 9 WARN, with `--hardening`).** The detail lists
+every finding per switch with the recommended value. Apply §5 to the named
+features, save, and re-run.
 
 **No devices listed (check 7 WARN).** SNMP is unconfigured or the FDB walk
 returned no rows; confirm SNMP is enabled.
@@ -758,8 +760,8 @@ returned no rows; confirm SNMP is enabled.
 | `--log` | Save a timestamped report (`netcheck-YYYYmmdd-HHMMSS.log`); written without ANSI color |
 | `--config PATH` | Use a specific INI file (default `netcheck.ini`) |
 | `--no-fix` | Never prompt for fixes (also automatic when not a TTY) |
-| `--sample SECONDS` | Counter-sampling window for the storm-threshold recommendation (default `30`; must be `> 0`) |
-| `--no-measure` | Skip rate sampling; use the static storm baseline |
+| `--sample SECONDS` | Sample storm counters and print per-switch `64Kbps × N` recommendations (check 10). Off by default; must be `> 0` |
+| `--hardening` | Run the opt-in hardening audit (check 9) |
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
 | `--verbose` | Print diagnostics to stderr: a config/platform preamble, per-check markers, and a Python traceback for any error — including handled degradations (SNMP, `scapy`, storm sampling) |
 | `--quiet` | Print only the one-line summary (hide per-check output) |
@@ -789,16 +791,16 @@ The tool never changes the router or any switch.
 
 - **Check 9 says "SNMP community not set".** `snmp_community` is empty. Set it in
   `netcheck.ini` or `NETCHECK_SNMP_COMMUNITY`.
-- **Check 9 shows "SNMP unavailable" for a switch.** SNMP is disabled on that
-  switch, the community is wrong/non-matching, a view blocks the MIBs, the
-  management subnet is unreachable, or the host firewall blocks UDP 161. See
-  [§4.3](#43-enable-snmp-read-only) for the full setup and verification.
-- **Check 9 says "hardening MIB not exposed by this firmware".** SNMP answered
-  but returned `noSuchObject` for every hardening object — the community's view
-  excludes `1.3.6.1.4.1.171`, or the firmware lacks those objects. The audit
-  reports the features as unauditable instead of guessing. Widen the view
-  ([§4.3](#43-enable-snmp-read-only) step 3) and confirm with
-  `snmpget -v2c -c <community> <switch> 1.3.6.1.4.1.171.10.76.20.1.1.8.0`.
+- **Check 9 (with `--hardening`) shows "SNMP unavailable" for a switch.** SNMP is
+  disabled on that switch, the community is wrong/non-matching, a view blocks the
+  MIBs, the management subnet is unreachable, or the host firewall blocks UDP
+  161. See [§4.3](#43-enable-snmp-read-only) for the full setup and verification.
+- **Check 9 (with `--hardening`) says "hardening MIB not exposed by this
+  firmware".** SNMP answered but returned `noSuchObject` for every hardening
+  object — the community's view excludes `1.3.6.1.4.1.171`, or the firmware lacks
+  those objects. The audit reports the features as unauditable instead of
+  guessing. Widen the view ([§4.3](#43-enable-snmp-read-only) step 3) and confirm
+  with `snmpget -v2c -c <community> <switch> 1.3.6.1.4.1.171.10.76.20.1.1.8.0`.
 - **Check 6 WARN "not tested: ...".** The detail names the reason (`scapy not
   installed`, `raw sockets denied`, ...). Install `scapy`
   (`uv run --with scapy netcheck.py`) and grant raw-socket rights: run as

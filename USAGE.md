@@ -40,16 +40,16 @@ uv --version
 ```bash
 git clone https://github.com/CountElqyd/netcheck.git
 cd netcheck
-uv run netcheck.py --no-fix
+uv run netcheck.py
 ```
 
 That is install (once) → clone → enter → run. If you already have **Python
-3.10+**, the last command can instead be `python3 netcheck.py --no-fix`.
+3.10+**, the last command can instead be `python3 netcheck.py`.
 
 **Enable the rogue-DHCP probe (check 6) and SNMP extras:**
 
 ```bash
-uv run --with scapy netcheck.py --no-fix   # + rogue-DHCP broadcast probe (needs admin/root)
+uv run --with scapy netcheck.py   # + rogue-DHCP broadcast probe (needs admin/root)
 ```
 
 **Configure before a real run** (secrets stay out of git — the file is
@@ -64,6 +64,10 @@ cp netcheck.ini.example netcheck.ini       # then set snmp_community etc.
 > (the `10.90.90.0/8` management alias, admin rights for scapy) and
 > [§4](#4-switch-prerequisites-one-time-web-ui) (read-only SNMP on each switch).
 > See [§6](#6-get-the-tool-and-first-run) for the download-and-run alternative.
+>
+> If `10.90.90.100/24` is not on the wired NIC, netcheck prints the exact
+> command to add it and **stops before the switch checks**. Add the address,
+> then run netcheck again.
 
 ---
 
@@ -79,7 +83,7 @@ cp netcheck.ini.example netcheck.ini       # then set snmp_community etc.
 7. [Interpreting output](#7-interpreting-output)
 8. [Scenario playbooks](#8-scenario-playbooks)
 9. [Flags](#9-flags)
-10. [Optional fixes](#10-optional-fixes)
+10. [Read-only guarantee](#10-read-only-guarantee)
 11. [Troubleshooting the tool](#11-troubleshooting-the-tool)
 12. [Security notes](#12-security-notes)
 13. [Appendix A — Configuration worksheet](#appendix-a--configuration-worksheet)
@@ -245,11 +249,10 @@ one holding `192.168.1.x` or `10.90.90.x` — and pins checks 5–9 to it. Wi-Fi
 stay connected and keeps the default route; force a specific NIC with
 `lan_interface` in `netcheck.ini`.
 
-Before checks 5–9, if that NIC has no `10.90.90.x` address, netcheck prompts and
-adds `10.90.90.100/24` as a secondary address, then **removes it when the run
-ends** (if netcheck added it). If the address cannot be added, it prints the
-exact root/Administrator command and continues. `--remove-mgmt-ip` removes a
-leftover transient address and exits.
+Before checks 5–9, if that NIC has no `10.90.90.x` address, netcheck prints the
+exact command to add `10.90.90.100/24` as a secondary address and **stops before
+the switch checks**. Add the address, then run netcheck again.
+`--remove-mgmt-ip` removes a leftover transient address and exits.
 
 To add it manually instead, on Linux run `sudo ip addr add 10.90.90.100/24 dev
 eth0` (replace `eth0`; macOS: `sudo ifconfig en0 alias 10.90.90.100
@@ -376,7 +379,7 @@ repeat steps 2–3 on all five using the **same** community string.
    leave it empty — the tool polls, it does not listen for traps.
 5. **Point the tool at it.** Set `snmp_community = netcheck-ro` in
    `netcheck.ini`, or export `NETCHECK_SNMP_COMMUNITY=netcheck-ro`.
-6. **Verify.** Run `python3 netcheck.py --no-fix`; check 7 must list devices.
+6. **Verify.** Run `python3 netcheck.py`; check 7 must list devices.
    With net-snmp installed you can also probe directly:
 
    ```bash
@@ -558,7 +561,7 @@ Check 9 therefore verifies only what SNMP exposes:
 - `DHCP Server Screening: disabled` — the global screening state is off.
 - `no trusted DHCP server IP configured` — the trusted-server list is empty.
 
-Run `python3 netcheck.py --hardening --verbose --no-fix`; check 9 prints `DHCP
+Run `python3 netcheck.py --hardening --verbose`; check 9 prints `DHCP
 screening enabled=… ; trusted servers …`. Confirm the per-port trust in the web
 UI and use **check 6** (rogue DHCP) for actual rogue detection.
 
@@ -599,7 +602,7 @@ installation beyond `uv`:
 ```bash
 git clone https://github.com/CountElqyd/netcheck.git
 cd netcheck
-uv run netcheck.py --no-fix
+uv run netcheck.py
 ```
 
 ### 6.2 Download-and-run from a GitHub Release
@@ -652,8 +655,7 @@ Long output wraps to the terminal width; set `COLUMNS` to control it. Use
 
 Each check prints a status line, then optional `Likely cause:` / `Suggested fix:`
 lines. **Exit codes:** `0` = clean, `1` = at least one `WARN`, `2` = at least one
-`FAIL` (highest wins). When run interactively, the tool then offers optional
-fixes (§10).
+`FAIL` (highest wins). netcheck is read-only and applies no changes (§10).
 
 ### 7.1 Check catalog
 
@@ -669,7 +671,6 @@ fixes (§10).
 | 8 | Loop/storm hints | Gateway loss/jitter heuristics | WARN: loss >5% or jitter >30 ms. PASS: quiet |
 | 9 | Hardening audit *(opt-in, `--hardening`)* | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. WARN: findings, SNMP unavailable, or MIB not exposed |
 | 10 | Storm thresholds *(opt-in, `--sample SECONDS`)* | Samples per-switch storm counters and prints the recommended `64Kbps × N` | PASS: per-switch recommendation printed. WARN: no samples collected |
-| 99 | Fixes applied | Present only if you accepted a fix | — |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
 **Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, then the
@@ -722,9 +723,8 @@ cable/switch port, then the router's link. The router itself is out of scope.
 upstream/ISP is the problem. You cannot fix this from the switches.
 
 **Internet by IP passes, DNS fails (check 4).** If public DNS works but ISP DNS
-fails, it is an **ISP DNS problem** — switch the PC to `1.1.1.1`/`8.8.8.8`. The
-tool's DNS "fix" only **requests** this change; apply it in your OS network
-settings (see §10).
+fails, it is an **ISP DNS problem** — switch the PC to `1.1.1.1`/`8.8.8.8` in
+your OS network settings.
 
 **Rogue DHCP (check 6 FAIL).** The report lists each rogue server's IP, MAC, and
 vendor. Check 7 lists the device table and marks the rogue MAC's switch and port.
@@ -755,10 +755,9 @@ returned no rows; confirm SNMP is enabled.
 | Flag | Effect |
 |---|---|
 | `-h`, `--help` | Show the help message and exit |
-| `--quick` | Connectivity layers only (checks 1–4); skips fabric checks and fixes |
+| `--quick` | Connectivity layers only (checks 1–4); skips fabric checks |
 | `--log` | Save a timestamped report (`netcheck-YYYYmmdd-HHMMSS.log`); written without ANSI color |
 | `--config PATH` | Use a specific INI file (default `netcheck.ini`) |
-| `--no-fix` | Never prompt for fixes (also automatic when not a TTY) |
 | `--sample SECONDS` | Sample storm counters and print per-switch `64Kbps × N` recommendations (check 10). Off by default; must be `> 0` |
 | `--hardening` | Run the opt-in hardening audit (check 9) |
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
@@ -766,23 +765,20 @@ returned no rows; confirm SNMP is enabled.
 | `--quiet` | Print only the one-line summary (hide per-check output) |
 | `--json` | Emit a machine-readable JSON report (`summary` + `checks`) instead of the human report |
 | `--no-color` | Disable ANSI color (also auto-off when not a TTY) |
+| `--remove-mgmt-ip` | Remove the transient switch-management address and exit — the only write path |
 | `--version` | Print the tool version and exit |
 
 ---
 
-## 10. Optional fixes
+## 10. Read-only guarantee
 
-After a non-`--quick` run, when run interactively (a TTY), the tool offers three
-per-action `y/N` prompts. Skip all with `--no-fix`. Prompts are auto-skipped when
-input is piped, so scripted runs never hang.
+netcheck never changes this machine. It runs only diagnostics: pings, DNS
+queries, a read-only SNMP walk, and (with `--hardening`) read-only SNMP gets.
+It does not add or remove addresses, flush caches, renew leases, or modify DNS.
 
-| Fix | Applies locally? | What it runs |
-|---|---|---|
-| Flush the DNS cache | **Yes** | Windows `ipconfig /flushdns`; macOS `dscacheutil -flushcache` + `killall -HUP mDNSResponder`; Linux `resolvectl flush-caches` |
-| Renew the DHCP lease | **Yes** | Windows `ipconfig /renew`; macOS `ipconfig set en0 DHCP`; Linux `dhclient -r` then `dhclient` |
-| Set this PC's DNS to `1.1.1.1`/`8.8.8.8` | **No** | The tool only *requests/records* this change; it does **not** modify the OS. Apply it yourself in your network settings. |
-
-The tool never changes the router or any switch.
+The single exception is the explicit `--remove-mgmt-ip` maintenance flag, which
+removes the transient `10.90.90.100/24` address if one is still present. Nothing
+else writes to the system, the switches, or the router.
 
 ---
 

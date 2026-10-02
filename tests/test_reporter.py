@@ -137,8 +137,33 @@ class TestReporter(unittest.TestCase):
         lines = r.render().splitlines()
         causes = [ln for ln in lines if "Likely cause:" in ln]
         self.assertEqual(len(causes), 1)
-        idx = lines.index("    Likely cause: first line")
-        self.assertEqual(lines[idx + 1], " " * 19 + "second line")
+        idx = lines.index("      Likely cause: first line")
+        self.assertEqual(lines[idx + 1], " " * 20 + "second line")
+
+    def test_body_indent_matches_between_detail_and_cause(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.FAIL, detail="one",
+                          likely_cause="cause"))
+        lines = r.render().splitlines()
+        self.assertEqual(lines[1], "      one")
+        self.assertEqual(lines[2], "      Likely cause: cause")
+
+    def test_render_splits_cause_at_semicolons(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(3, "Internet", Status.FAIL,
+                          suggested_fix="check the router; retry later"))
+        lines = r.render().splitlines()
+        self.assertIn("      Suggested fix: check the router", lines)
+        self.assertIn(" " * 21 + "retry later", lines)
+
+    def test_tags_and_titles_align(self):
+        r = Reporter(color=False)
+        r.add(CheckResult(1, "A", Status.PASS, detail="x"))
+        r.add(CheckResult(2, "Long title here", Status.WARN, detail="y"))
+        r.add(CheckResult(3, "B", Status.FAIL, detail="z"))
+        heads = [ln for ln in r.render().splitlines() if ln.startswith("[")]
+        starts = [ln.index(". ") + 2 for ln in heads]
+        self.assertEqual(len(set(starts)), 1)
 
 
 if __name__ == "__main__":

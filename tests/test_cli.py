@@ -28,6 +28,7 @@ class TestCli(unittest.TestCase):
             try:
                 with mock.patch.object(netcheck, "run_all", fake_run_all), \
                         contextlib.redirect_stdout(stdout), \
+                        contextlib.redirect_stderr(io.StringIO()), \
                         mock.patch.object(sys.stdout, "isatty", return_value=True):
                     code = netcheck.main(["--log", "--quick"])
                 logs = [f for f in os.listdir(tmp)
@@ -59,6 +60,24 @@ class TestCli(unittest.TestCase):
 
         self.assertNotEqual(first, second)
         self.assertEqual(second, "netcheck-20260101-000000-1.log")
+
+    def test_warns_when_default_config_missing(self):
+        def fake_run_all(cfg, reporter, **kwargs):
+            reporter.add(netcheck.CheckResult(1, "Local config", netcheck.Status.PASS))
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with mock.patch.object(netcheck, "run_all", fake_run_all), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(stderr):
+                    code = netcheck.main(["--quick"])
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(code, 0)
+        self.assertIn("not found", stderr.getvalue())
 
 
 if __name__ == "__main__":

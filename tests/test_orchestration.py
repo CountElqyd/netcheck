@@ -19,6 +19,12 @@ class TestOrchestration(unittest.TestCase):
         args = parser.parse_args(["--quick", "--hardening"])
         self.assertTrue(args.quick)
         self.assertTrue(args.hardening)
+        self.assertFalse(args.inventory)
+
+    def test_inventory_defaults_off(self):
+        self.assertFalse(netcheck.build_parser().parse_args([]).inventory)
+        self.assertTrue(
+            netcheck.build_parser().parse_args(["--inventory"]).inventory)
 
     def test_sample_defaults_to_none(self):
         self.assertIsNone(netcheck.build_parser().parse_args([]).sample)
@@ -56,21 +62,18 @@ class TestOrchestration(unittest.TestCase):
         netcheck.check_rogue_dhcp = lambda *a, **k: (
             netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
         try:
-            netcheck.run_all(netcheck.Config(), reporter, hardening=True,
+            netcheck.run_all(netcheck.Config(), reporter,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             netcheck.check_switches = orig_switches
             netcheck.check_rogue_dhcp = orig_rogue
         ids = [r.id for r in reporter.results]
         self.assertIn(5, ids)
+        self.assertIn(6, ids)
         self.assertIn(7, ids)
-        self.assertIn(8, ids)
-        self.assertIn(9, ids)
         check5 = next(r for r in reporter.results if r.id == 5)
         self.assertIs(check5.status, netcheck.Status.WARN)
         self.assertIn("check failed", check5.detail)
-        check7 = next(r for r in reporter.results if r.id == 7)
-        self.assertIs(check7.status, netcheck.Status.WARN)
 
     def test_check9_absent_by_default(self):
         reporter = netcheck.Reporter(color=False)
@@ -84,41 +87,50 @@ class TestOrchestration(unittest.TestCase):
             netcheck.check_rogue_dhcp = orig_rogue
         self.assertNotIn(9, [r.id for r in reporter.results])
 
-    def test_sample_emits_threshold_check(self):
+    def test_sample_emits_only_threshold_check(self):
         reporter = netcheck.Reporter(color=False)
         orig_measure = netcheck.measure_storm_threshold
-        orig_rogue = netcheck.check_rogue_dhcp
         netcheck.measure_storm_threshold = lambda cfg, sample_seconds=0, **k: {
             "dlink1": {"threshold": 20032}}
-        netcheck.check_rogue_dhcp = lambda *a, **k: (
-            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
         try:
             netcheck.run_all(netcheck.Config(), reporter, sample=0.01,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             netcheck.measure_storm_threshold = orig_measure
-            netcheck.check_rogue_dhcp = orig_rogue
-        check10 = [r for r in reporter.results if r.id == 10]
-        self.assertEqual(len(check10), 1)
-        self.assertIn("N=313", check10[0].detail)
+        self.assertEqual([r.id for r in reporter.results], [10])
+        self.assertIn("N=313", reporter.results[0].detail)
 
-    def test_check7_always_emits_inventory(self):
+    def test_inventory_absent_by_default(self):
         reporter = netcheck.Reporter(color=False)
         orig = netcheck.check_device_inventory
-        orig_rogue = netcheck.check_rogue_dhcp
-        netcheck.check_device_inventory = lambda *a, **k: netcheck.CheckResult(
-            7, "Device inventory", netcheck.Status.PASS, detail="0 devices")
-        netcheck.check_rogue_dhcp = lambda *a, **k: (
-            netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS, detail="stub"), [])
+        called = {"n": 0}
+
+        def stub(*a, **k):
+            called["n"] += 1
+            return netcheck.CheckResult(8, "Device inventory",
+                                        netcheck.Status.PASS, detail="stub")
+
+        netcheck.check_device_inventory = stub
         try:
             netcheck.run_all(netcheck.Config(), reporter,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             netcheck.check_device_inventory = orig
-            netcheck.check_rogue_dhcp = orig_rogue
-        check7 = [r for r in reporter.results if r.id == 7]
-        self.assertEqual(len(check7), 1)
-        self.assertIn("Device inventory", check7[0].title)
+        self.assertEqual(called["n"], 0)
+        self.assertNotIn(8, [r.id for r in reporter.results])
+
+    def test_inventory_optin_runs_only_inventory(self):
+        reporter = netcheck.Reporter(color=False)
+        orig = netcheck.check_device_inventory
+        netcheck.check_device_inventory = lambda *a, **k: netcheck.CheckResult(
+            8, "Device inventory", netcheck.Status.PASS, detail="0 devices")
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, inventory=True,
+                             runner=lambda *a, **k: (0, "", ""))
+        finally:
+            netcheck.check_device_inventory = orig
+        self.assertEqual([r.id for r in reporter.results], [8])
+        self.assertIn("Device inventory", reporter.results[0].title)
 
     def test_outer_handler_reports_internal_error(self):
         reporter = netcheck.Reporter(color=False)
@@ -355,16 +367,33 @@ class TestOrchestration(unittest.TestCase):
             netcheck.CheckResult(6, "Rogue DHCP", netcheck.Status.PASS,
                                  detail="stub"), [])
         netcheck.check_device_inventory = lambda *a, **k: netcheck.CheckResult(
-            7, "Device inventory", netcheck.Status.PASS, detail="stub")
+            8, "Device inventory", netcheck.Status.PASS, detail="stub")
         netcheck.check_storm_hints = lambda *a, **k: netcheck.CheckResult(
-            8, "Loop/storm hints", netcheck.Status.PASS, detail="stub")
+            7, "Loop/storm hints", netcheck.Status.PASS, detail="stub")
         try:
             netcheck.run_all(netcheck.Config(), reporter,
                              runner=lambda *a, **k: (0, "", ""))
         finally:
             for name, fn in orig.items():
                 setattr(netcheck, name, fn)
-        self.assertEqual([r.id for r in reporter.results], [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertEqual([r.id for r in reporter.results], [1, 2, 3, 4, 5, 6, 7])
+
+    def test_run_all_optin_checks_in_numeric_order(self):
+        reporter = netcheck.Reporter(color=False)
+        orig = {name: getattr(netcheck, name) for name in (
+            "resolve_lan_interface", "check_device_inventory", "check_hardening")}
+        netcheck.resolve_lan_interface = lambda *a, **k: None
+        netcheck.check_device_inventory = lambda *a, **k: netcheck.CheckResult(
+            8, "Device inventory", netcheck.Status.PASS, detail="stub")
+        netcheck.check_hardening = lambda *a, **k: netcheck.CheckResult(
+            9, "Hardening audit", netcheck.Status.PASS, detail="stub")
+        try:
+            netcheck.run_all(netcheck.Config(), reporter, inventory=True,
+                             hardening=True, runner=lambda *a, **k: (0, "", ""))
+        finally:
+            for name, fn in orig.items():
+                setattr(netcheck, name, fn)
+        self.assertEqual([r.id for r in reporter.results], [8, 9])
 
     def test_main_rejects_invalid_gateway(self):
         stderr = io.StringIO()

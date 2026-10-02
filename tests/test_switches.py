@@ -25,6 +25,13 @@ class TestSwitches(unittest.TestCase):
         result = check_switches(Config(), ping_fn=all_down)
         self.assertIn("\n", result.detail)
 
+    def test_cascade_hint_uses_configured_uplink(self):
+        cfg = Config(uplink_ports={23, 24, 25, 26, 27},
+                     uplink_ports_by_switch={"dlink4": {25}})
+        result = check_switches(cfg, ping_fn=_ping)  # dlink4 is down in _ping
+        self.assertIn("25", result.detail)
+        self.assertNotIn("26", result.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -152,7 +152,7 @@ Strict tree — there are no redundant links. Management IPs are `10.90.90.90`
 
 > **One-time prerequisite:** complete [§4.3](#43-enable-snmp-read-only) (enable a
 > read-only SNMP community on all five switches) before taking the baseline.
-> Without it, check 7 cannot list devices and the opt-in storm measurement has
+> Without it, check 8 cannot list devices and the opt-in storm measurement has
 > nothing to read.
 
 ### 2.1 Capture a connectivity baseline
@@ -165,9 +165,10 @@ python3 netcheck.py --quick --log  # connectivity layers only (checks 1-4)
 ```
 
 Keep the logs. A healthy baseline should show `[PASS]` on checks 1–5, `[PASS]`
-on 6 (only the gateway answers DHCP), and `[PASS]` on 8. The hardening audit
-(check 9) is **opt-in** (`--hardening`) and the storm measurement is opt-in
-(`--sample`, §2.2).
+on 6 (only the gateway answers DHCP), and `[PASS]` on 7 (loop/storm). The device
+inventory (check 8), hardening audit (check 9), and storm measurement (check 10)
+are **opt-in** and run alone — `--inventory`, `--hardening`, and `--sample`,
+respectively (§2.2, §9).
 
 ### 2.2 Measure the storm-control rates (opt-in)
 
@@ -213,9 +214,10 @@ Record the recommended threshold per switch in the worksheet (Appendix A).
 
 1. Baseline: save a `--log` run from §2.1 **before** changing switch settings.
 2. Apply the hardening configuration (§5), one switch at a time.
-3. Re-run `python3 netcheck.py --hardening --log` after each switch.
+3. Re-run `python3 netcheck.py --log` (checks 1–7) and
+   `python3 netcheck.py --hardening --log` (check 9) after each switch.
 4. Diff the logs. Expected outcome: check 9 stops reporting findings for the
-   switches you fixed, checks 1–8 stay `[PASS]`, and no new `[WARN]`/`[FAIL]`
+   switches you fixed, checks 1–7 stay `[PASS]`, and no new `[WARN]`/`[FAIL]`
    appears elsewhere. A transient extra `[WARN]` right after a change is usually
    a re-converging link; re-run to confirm.
 
@@ -305,7 +307,7 @@ If no file exists, built-in defaults are used. Precedence is
 | `switch_pass` | *(empty)* | Unused; retained for config compatibility |
 | `storm_safety_factor` | `4` | Multiplier over measured peak |
 | `storm_floor_kbps` | `10000` | Lower bound for the recommendation |
-| `uplink_ports` | `23-27` | Ports facing another switch or the router; check 7 hides FDB entries learned here. Global ranges plus per-switch overrides — an override **replaces** the global for that switch. Spoke example: `23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25` |
+| `uplink_ports` | `23-27` | Ports facing another switch or the router; check 8 hides FDB entries learned here. Global ranges plus per-switch overrides — an override **replaces** the global for that switch. Spoke example: `23-27,dlink2:24,dlink3:25,dlink4:25,dlink5:25` |
 
 For the spoke layout in this guide, set the uplinks explicitly so each
 downstream switch hides only its own inter-switch port:
@@ -326,6 +328,13 @@ Equivalent environment variables (override the file):
 `NETCHECK_STORM_FLOOR_KBPS`, `NETCHECK_UPLINK_PORTS`.
 
 Secrets are never printed and never written to the report.
+
+If `netcheck.ini` is missing, netcheck warns on stderr and runs with the built-in
+defaults (copy `netcheck.ini.example` to `netcheck.ini` and fill it in). Check 1's
+`dns` line shows the wired NIC's own DNS when the platform exposes it
+(`resolvectl dns <iface>` / `nmcli` on Linux); otherwise it falls back to the host
+resolver list with Wi-Fi-only servers filtered out. Check 4 always tests the `dns`
+list from this config.
 
 ---
 
@@ -357,7 +366,7 @@ if the default is still in use.
 ### 4.3 Enable SNMP (read-only)
 
 SNMP is **disabled by default**, and the tool needs it to read switch state for
-the device inventory (check 7), the opt-in hardening audit (check 9), and the
+the device inventory (check 8), the opt-in hardening audit (check 9), and the
 opt-in storm measurement (check 10). Configure each switch as follows, then
 repeat steps 2–3 on all five using the **same** community string.
 
@@ -379,7 +388,7 @@ repeat steps 2–3 on all five using the **same** community string.
    leave it empty — the tool polls, it does not listen for traps.
 5. **Point the tool at it.** Set `snmp_community = netcheck-ro` in
    `netcheck.ini`, or export `NETCHECK_SNMP_COMMUNITY=netcheck-ro`.
-6. **Verify.** Run `python3 netcheck.py`; check 7 must list devices.
+6. **Verify.** Run `python3 netcheck.py --inventory`; check 8 must list devices.
    With net-snmp installed you can also probe directly:
 
    ```bash
@@ -412,7 +421,7 @@ Notes:
 ### 4.4 Telnet has no runtime use
 
 The DGS-1210 Telnet CLI exists on this firmware, but the tool does **not** use
-it at runtime. In particular, the device inventory (check 7) has **no Telnet
+it at runtime. In particular, the device inventory (check 8) has **no Telnet
 fallback**: if the SNMP FDB walk returns nothing, the switch's rows are simply
 empty. SNMP (§4.3) is the only way the tool reads switch state.
 
@@ -468,7 +477,7 @@ A port reporting **loop state** is direct evidence of a live loop. The tool
 **cannot read loop state on this firmware** — the DGS-1210 exposes LBD's global
 enable/recover time and a per-port *mode* (access/uplink), but no pollable
 per-port loop status, so the audit reports LBD configuration only and relies on
-check 8's gateway loss/jitter heuristics to flag a live storm. Check the LBD
+check 7's gateway loss/jitter heuristics to flag a live storm. Check the LBD
 table in the web UI (`L2 Functions > Loopback Detection`) for loop state.
 
 ### 5.2 Spanning Tree — `L2 Functions > Spanning Tree`
@@ -666,19 +675,32 @@ lines. **Exit codes:** `0` = clean, `1` = at least one `WARN`, `2` = at least on
 | 3 | Internet by IP | Pings `1.1.1.1` and `8.8.8.8` | PASS: both. WARN: one. FAIL: neither |
 | 4 | DNS | Resolves the test domain on ISP DNS and public DNS | FAIL: public works but ISP fails (**ISP DNS problem**). WARN: ISP works, public fails. FAIL: none |
 | 5 | Switches | Pings all five management IPs | PASS: all answer. WARN: any down (with cascade-port hint) |
-| 6 | Rogue DHCP | scapy broadcast discover (5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
-| 7 | Device inventory | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch, always in full. Ports in `uplink_ports` (other switches/the router) and duplicate MACs are hidden | PASS: no rogue responder present. FAIL: a listed MAC is a confirmed rogue-DHCP responder. WARN: SNMP not configured or no switch returned an FDB |
-| 8 | Loop/storm hints | Gateway loss/jitter heuristics | WARN: loss >5% or jitter >30 ms. PASS: quiet |
+| 6 | Rogue DHCP | scapy broadcast discover (real NIC MAC + broadcast reply flag, one retry, 5 s); states whether it ran and the reason if not | PASS: only the trusted gateway. WARN: probe unavailable (reason) or no server answered. FAIL: any other responder |
+| 7 | Loop/storm hints | Gateway loss/jitter heuristics | WARN: loss >5% or jitter >30 ms. PASS: quiet |
+| 8 | Device inventory *(opt-in, `--inventory`)* | SNMP FDB walk (Q-BRIDGE, BRIDGE fallback) on every switch; lists end devices on access ports, grouped by switch. `uplink_ports` plus auto-detected trunks are hidden; the local host's own MAC is tagged `this host` | PASS: table produced. WARN: SNMP not configured or no switch returned an FDB |
 | 9 | Hardening audit *(opt-in, `--hardening`)* | Read-only per-switch audit vs §5 baseline | PASS: all switches meet baseline. WARN: findings, SNMP unavailable, or MIB not exposed |
 | 10 | Storm thresholds *(opt-in, `--sample SECONDS`)* | Samples per-switch storm counters and prints the recommended `64Kbps × N` | PASS: per-switch recommendation printed. WARN: no samples collected |
 | 98 | Internal error | Present on an unexpected exception | WARN; re-run with `--verbose` |
 
-**Emission order:** checks 1–4 (short-circuit on a `FAIL`), then 5, 6, 7, 8, then
-the opt-in 9 (`--hardening`) and 10 (`--sample`).
-Check 7 always prints the full per-switch device table, but shows only end devices:
-FDB entries learned on `uplink_ports` (cascade/uplink ports) are hidden, and a MAC
-seen on more than one access port is listed once, on the least-populated port. Rows
-for MACs confirmed as non-gateway DHCP responders (check 6) are marked `ROGUE`.
+**Emission order:** the default run emits checks 1–4 (short-circuit on a `FAIL`),
+then 5, 6, 7. The opt-in checks run **alone** and only when requested — 8
+(`--inventory`), 9 (`--hardening`), 10 (`--sample`) — and combine in numeric order
+when several are given. `--quick` (checks 1–4) applies to the default run only and
+is ignored when an opt-in flag is present.
+
+Because check 8 runs alone, it does not see check 6's rogue-DHCP result, so its
+table never carries `ROGUE` marks. To localize a rogue responder, use the MAC that
+check 6 prints (its IP, MAC, and vendor) and find that MAC in the check 8 table.
+
+Check 8 prints the full per-switch device table, but shows only end devices:
+FDB entries learned on `uplink_ports` (cascade/uplink ports) or on auto-detected
+trunk ports (any port learning many MACs — e.g. an inter-switch link not listed in
+`uplink_ports`) are hidden, as are all-zero and multicast/broadcast MACs. A MAC
+seen on more than one access port is attributed to its physical access port; if it
+still appears on several, the least-populated port wins. The local host's own wired
+NIC is tagged `this host`. With `--verbose`, check 8 also prints each switch's raw
+FDB rows and the trunk ports it classified, which makes a "N physical vs M listed"
+mismatch easy to explain.
 
 ### 7.2 Status meanings
 
@@ -693,18 +715,20 @@ for MACs confirmed as non-gateway DHCP responders (check 6) are marked `ROGUE`.
 [PASS]  1. Local config   - 192.168.1.50 gw 192.168.1.1 dns 58.71.2.8,45.63.30.117
 [FAIL]  6. Rogue DHCP     - via scapy: 192.168.1.77 (aa:bb:cc:dd:ee:ff, TP-Link)
     Likely cause: A non-gateway DHCP server is handing out leases.
-    Suggested fix: Find the responder in the device inventory (check 7) and unplug
-                   it; enable DHCP Server Screening (Security) with 192.168.1.1
-                   trusted.
-[FAIL]  7. Device inventory - 139 devices; rogue on dlink1 port 5
-    dlink1  port  5   AA:BB:CC:DD:EE:FF  TP-Link  ROGUE
-    dlink1  port 12   00:1E:58:11:22:33  D-Link
-    dlink2  port  3   3C:07:54:9A:BC:DE  Apple
+    Suggested fix: Find the responder's MAC in the device inventory (check 8)
+                   and unplug it; enable DHCP Server Screening (Security) with
+                   192.168.1.1 trusted.
+[PASS]  8. Device inventory - 139 devices on 5 switches
+    dlink1
+        port  5   AA:BB:CC:DD:EE:FF  TP-Link
+        port 12   00:1E:58:11:22:33  D-Link
+    dlink2
+        port  3   3C:07:54:9A:BC:DE  Apple
 [WARN]  9. Hardening audit - dlink1: Loopback Detection: disabled (recommended: enabled, recover time 0)
     Likely cause: -
     Suggested fix: Apply the baseline in USAGE.md.
 
-Summary: 1 PASS · 1 WARN · 2 FAIL  (exit code 2)
+Summary: 2 PASS · 1 WARN · 1 FAIL  (exit code 2)
 Legend:  PASS healthy  ·  WARN needs attention  ·  FAIL broken — fix FAILs first
 ```
 
@@ -727,25 +751,25 @@ fails, it is an **ISP DNS problem** — switch the PC to `1.1.1.1`/`8.8.8.8` in
 your OS network settings.
 
 **Rogue DHCP (check 6 FAIL).** The report lists each rogue server's IP, MAC, and
-vendor. Check 7 lists the device table and marks the rogue MAC's switch and port.
-Unplug that device, then confirm DHCP Server Screening is enabled with
-`192.168.1.1` trusted (§5.5).
+vendor. Find that MAC in the check 8 device table (`--inventory`) to locate the
+switch and port it is on. Unplug that device, then confirm DHCP Server Screening
+is enabled with `192.168.1.1` trusted (§5.5).
 
-**Loop or storm (check 8 WARN).** Check 8 warns on gateway loss >5% or jitter
+**Loop or storm (check 7 WARN).** Check 7 warns on gateway loss >5% or jitter
 >30 ms — corroborate with LBD loop status in the web UI (`L2 Functions > Loopback
 Detection`) and with error/broadcast counters before declaring a storm. Trace the
 looped port, unplug the cable (or the looped unmanaged switch), then re-check.
 
-**A switch is unreachable (check 5 WARN).** The hint names the likely cascade
-port on dlink1 (`dlink2`→24, `dlink3`→25, `dlink4`→26, `dlink5`→27). Reseat that
-cable and confirm the management IP. `dlink1` unreachable points at the
-management path or switch 1 itself.
+**A switch is unreachable (check 5 WARN).** The hint names that switch's own
+uplink port(s) toward dlink1, taken from `uplink_ports`. Reseat that cable and
+confirm the management IP. `dlink1` unreachable points at the management path or
+switch 1 itself.
 
 **Hardening below baseline (check 9 WARN, with `--hardening`).** The detail lists
 every finding per switch with the recommended value. Apply §5 to the named
 features, save, and re-run.
 
-**No devices listed (check 7 WARN).** SNMP is unconfigured or the FDB walk
+**No devices listed (check 8 WARN).** SNMP is unconfigured or the FDB walk
 returned no rows; confirm SNMP is enabled.
 
 ---
@@ -755,11 +779,12 @@ returned no rows; confirm SNMP is enabled.
 | Flag | Effect |
 |---|---|
 | `-h`, `--help` | Show the help message and exit |
-| `--quick` | Connectivity layers only (checks 1–4); skips fabric checks |
+| `--quick` | Default run only: connectivity layers (checks 1–4); ignored when an opt-in flag is present |
 | `--log` | Save a timestamped report (`netcheck-YYYYmmdd-HHMMSS.log`); written without ANSI color |
 | `--config PATH` | Use a specific INI file (default `netcheck.ini`) |
-| `--sample SECONDS` | Sample storm counters and print per-switch `64Kbps × N` recommendations (check 10). Off by default; must be `> 0` |
-| `--hardening` | Run the opt-in hardening audit (check 9) |
+| `--inventory` | Run only the opt-in device inventory (check 8) |
+| `--sample SECONDS` | Run only the opt-in storm sampling and print per-switch `64Kbps × N` recommendations (check 10). Must be `> 0`; also feeds `--hardening` when both are given |
+| `--hardening` | Run only the opt-in hardening audit (check 9) |
 | `--timeout N` | Per-network-operation timeout in seconds (default `3`; must be `> 0`) |
 | `--verbose` | Print diagnostics to stderr: a config/platform preamble, per-check markers, and a Python traceback for any error — including handled degradations (SNMP, `scapy`, storm sampling) |
 | `--quiet` | Print only the one-line summary (hide per-check output) |
@@ -799,11 +824,15 @@ else writes to the system, the switches, or the router.
 - **Check 6 WARN "not tested: ...".** The detail names the reason (`scapy not
   installed`, `raw sockets denied`, ...). Install `scapy`
   (`uv run --with scapy netcheck.py`) and grant raw-socket rights: run as
-  root/administrator (`sudo -E uv run --with scapy netcheck.py`), or on Linux
+  root/administrator (`sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py`), or on Linux
   grant the interpreter the capability once
   (`sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"`), or
   accept the WARN. See [§3.4](#34-privileges-and-optional-tools).
-- **Check 7 shows a switch with no rows.** The FDB walk returned nothing on that
+- **Check 6 WARN "no DHCP server answered on this segment".** The probe is an active
+  broadcast DISCOVER sent with the wired NIC's real MAC, so it does not depend on a
+  client renewing. No OFFER means no DHCP server/relay serves that VLAN, or the server
+  ignored the probe — confirm DHCP is reachable on the wired segment.
+- **Check 8 shows a switch with no rows.** The FDB walk returned nothing on that
   firmware; confirm SNMP visibility. The inventory has no Telnet fallback.
 - **Colors look wrong / garbled.** Use `--no-color` (auto-off when not a TTY).
 - **Need more detail on an internal error or a degraded check.** Re-run with

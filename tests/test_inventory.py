@@ -7,12 +7,14 @@ from netcheck import (
     Config,
     Devicelist,
     SnmpError,
+    _is_valid_mac,
     access_devices,
     collect_devices,
     mac_from_oid_suffix,
     mac_to_oid_suffix,
     parse_port_spec,
     parse_uplink_ports,
+    read_interface_macs,
     uplink_ports_for,
 )
 
@@ -99,6 +101,44 @@ class ExplodingClient(FakeClient):
         return super().walk(base_oid)
 
 
+class BogusMacClient(FakeClient):
+    def walk(self, base_oid):
+        if base_oid == QB_FDB_OID:
+            return [(f"{QB_FDB_OID}.1.{_suffix('01:00:5E:00:00:01')}", 4),
+                    (f"{QB_FDB_OID}.1.{_suffix(MAC_A)}", 5)]
+        if base_oid == BASE_PORT_IFINDEX_OID:
+            return [(f"{BASE_PORT_IFINDEX_OID}.5", 5)]
+        return []
+
+
+class TestValidMac(unittest.TestCase):
+    def test_accepts_unicast_global(self):
+        self.assertTrue(_is_valid_mac("00:1E:58:AA:BB:CC"))
+
+    def test_accepts_null_oui_unicast(self):
+        self.assertTrue(_is_valid_mac("00:00:00:00:00:89"))
+
+    def test_rejects_all_zero(self):
+        self.assertFalse(_is_valid_mac("00:00:00:00:00:00"))
+
+    def test_rejects_multicast_and_broadcast(self):
+        self.assertFalse(_is_valid_mac("01:00:5E:00:00:01"))
+        self.assertFalse(_is_valid_mac("ff:ff:ff:ff:ff:ff"))
+
+
+class TestReadInterfaceMacs(unittest.TestCase):
+    def test_none_returns_empty(self):
+        self.assertEqual(read_interface_macs(None), set())
+
+    def test_parses_ip_link_fallback(self):
+        def runner(argv):
+            return 0, ("2: eth9: <BROADCAST> mtu 1500\n"
+                       "    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff\n"), ""
+        self.assertEqual(
+            read_interface_macs("eth9-definitely-missing", runner),
+            {"AA:BB:CC:DD:EE:FF"})
+
+
 class TestCollectDevices(unittest.TestCase):
     def test_collects_macs_and_ports_per_switch(self):
         cfg = Config(switches={"dlink1": "10.90.90.90", "dlink2": "10.90.90.91"},
@@ -112,6 +152,11 @@ class TestCollectDevices(unittest.TestCase):
     def test_bridge_fallback_when_qbridge_empty(self):
         cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
         result = collect_devices(cfg, client_factory=BridgeOnlyClient)
+        self.assertEqual(result.devices["dlink1"], {MAC_A: 5})
+
+    def test_filters_bogus_macs(self):
+        cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
+        result = collect_devices(cfg, client_factory=BogusMacClient)
         self.assertEqual(result.devices["dlink1"], {MAC_A: 5})
 
     def test_switch_error_yields_partial_result(self):
@@ -190,6 +235,17 @@ class TestAccessDevices(unittest.TestCase):
         result = access_devices(devs, lambda switch: set())
         self.assertEqual(result.errors, ["dlink1: SNMP unavailable (x)"])
 
+    def test_auto_detects_trunk_and_attributes_to_access_port(self):
+        trunk_macs = {f"00:1E:58:AA:BB:{i:02X}": 5 for i in range(1, 9)}
+        trunk_macs[MAC_A] = 5
+        devs = Devicelist(devices={
+            "dlink1": trunk_macs,
+            "dlink2": {MAC_A: 3},
+        })
+        result = access_devices(devs, lambda switch: set())
+        self.assertNotIn(MAC_A, result.devices["dlink1"])
+        self.assertEqual(result.devices["dlink2"], {MAC_A: 3})
+
 
 from netcheck import (
     CheckResult,
@@ -236,6 +292,16 @@ class TestFormatInventory(unittest.TestCase):
         devs = Devicelist(devices={"dlink1": {"00:1E:58:11:22:33": 5}})
         self.assertIn("D-Link", format_inventory(devs, []))
 
+    def test_tags_local_host(self):
+        devs = Devicelist(devices={"dlink1": {MAC_A: 5, MAC_B: 8}})
+        text = format_inventory(devs, [], local_macs={MAC_A})
+        host_lines = [ln for ln in text.splitlines() if "this host" in ln]
+        self.assertEqual(len(host_lines), 1)
+        self.assertIn(MAC_A, host_lines[0])
+        other = next(ln for ln in text.splitlines() if MAC_B in ln)
+        self.assertNotIn("this host", other)
+        self.assertNotIn("this host", format_inventory(devs, []))
+
     def test_error_lines_are_appended(self):
         devs = Devicelist(devices={"dlink2": {}}, errors=["dlink2: SNMP unavailable (x)"])
         self.assertIn("dlink2: SNMP unavailable", format_inventory(devs, []))
@@ -246,7 +312,7 @@ class TestCheckDeviceInventory(unittest.TestCase):
         cfg = Config(switches={"dlink1": "10.90.90.90"}, snmp_community="public")
         result = check_device_inventory(cfg, [MAC_A], client_factory=FakeClient)
         self.assertIs(result.status, Status.FAIL)
-        self.assertEqual(result.id, 7)
+        self.assertEqual(result.id, 8)
         self.assertIn("Device inventory", result.title)
 
     def test_pass_when_no_rogue(self):

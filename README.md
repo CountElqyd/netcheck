@@ -50,8 +50,9 @@ cd netcheck
 auto-detects the wired NIC (the one holding `192.168.1.x` or `10.90.90.x`) —
 Wi-Fi can stay connected and keeps the default route. Before checks 5–9, if the
 `10.90.90.x` address is missing, netcheck prompts and adds `10.90.90.100/24` to
-that NIC, then **removes it when the run ends**. If it cannot add the address it
-prints the exact command to run as root/Administrator and continues.
+that NIC, then **removes it when the run ends** (only if netcheck added it). If
+it cannot add the address it prints the exact command to run as
+root/Administrator and continues.
 
 To set it up manually instead (or force the NIC), use `lan_interface` in
 `netcheck.ini` and run e.g. `sudo ip addr add 10.90.90.100/24 dev eth0`.

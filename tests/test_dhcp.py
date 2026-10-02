@@ -22,7 +22,7 @@ class TestDhcp(unittest.TestCase):
         self.assertEqual(macs, ["AA:BB:CC:DD:EE:FF"])
         self.assertIn("via scapy", result.detail)
         self.assertNotIn("Trace the responder", result.suggested_fix)
-        self.assertIn("check 7", result.suggested_fix)
+        self.assertIn("check 8", result.suggested_fix)
         self.assertIn("inventory", result.suggested_fix)
 
     def test_clean_passes_with_method(self):

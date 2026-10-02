@@ -751,9 +751,9 @@ fails, it is an **ISP DNS problem** — switch the PC to `1.1.1.1`/`8.8.8.8` in
 your OS network settings.
 
 **Rogue DHCP (check 6 FAIL).** The report lists each rogue server's IP, MAC, and
-vendor. Check 8 lists the device table and marks the rogue MAC's switch and port.
-Unplug that device, then confirm DHCP Server Screening is enabled with
-`192.168.1.1` trusted (§5.5).
+vendor. Find that MAC in the check 8 device table (`--inventory`) to locate the
+switch and port it is on. Unplug that device, then confirm DHCP Server Screening
+is enabled with `192.168.1.1` trusted (§5.5).
 
 **Loop or storm (check 7 WARN).** Check 7 warns on gateway loss >5% or jitter
 >30 ms — corroborate with LBD loop status in the web UI (`L2 Functions > Loopback

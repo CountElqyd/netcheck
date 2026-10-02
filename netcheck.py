@@ -1573,8 +1573,8 @@ def check_rogue_dhcp(cfg: Config, discover_fn=None,
     return (CheckResult(6, "Rogue DHCP", Status.FAIL, detail=f"via scapy: {listing}",
                         likely_cause="A non-gateway DHCP server is handing out leases.",
                         suggested_fix="Find the responder in the device inventory "
-                                      "(check 7) and unplug it; enable DHCP Server "
-                                      "Screening on access ports."),
+                                      "(check 8, --inventory) and unplug it; enable "
+                                      "DHCP Server Screening on access ports."),
             [r.mac for r in rogues if r.mac])
 
 

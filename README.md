@@ -3,7 +3,8 @@
 A single-file, read-only CLI that diagnoses *why the internet is broken* on the
 office network, then audits the D-Link DGS-1210 switch fabric for the conditions
 that cause intermittent outages: rogue DHCP servers, loops/broadcast storms, and
-(opt-in) switch settings that drift below a hardening baseline.
+(opt-in) the device inventory plus switch settings that drift below a hardening
+baseline.
 
 > **Read-only guarantee.** `netcheck` never changes the ISP router and never
 > writes switch configuration (no SNMP SET, no CLI `config`/`save`). It only reads
@@ -12,18 +13,27 @@ that cause intermittent outages: rogue DHCP servers, loops/broadcast storms, and
 
 It runs on Windows, Linux, and macOS; is standard-library only (Python 3.10+);
 needs no installation; and prints one `PASS`/`WARN`/`FAIL` line per check with a
-likely cause and a suggested fix.
+likely cause and a suggested fix. The default run is checks 1–7; device inventory
+(8), hardening audit (9), and storm sampling (10) are **opt-in**.
 
 ## Quickstart
 
-One-time setup, then four steps to a full run (checks 1–9).
+One-time setup, then run the checks.
 
-**You'll need:** the office LAN (same Layer-2 segment as the switches); admin/root
-for the rogue-DHCP probe; and read-only SNMP on the switches for the inventory and
-hardening checks — switch-side setup is in [`USAGE.md`](USAGE.md) §4.
+**You'll need:**
 
-**Install `uv` (once).** It fetches a suitable Python itself — no `pip`, no
-virtualenv, and no pre-installed Python.
+| Need | For |
+|---|---|
+| Wired LAN on the switches' Layer-2 segment | checks 1–7 |
+| Admin/root (Administrator / sudo) | check 6 (rogue-DHCP probe) |
+| Read-only SNMP community on the switches | checks 8 (inventory) and 9 (hardening) |
+
+Switch-side SNMP setup is in [`USAGE.md`](USAGE.md) §4.
+
+### 1. Install `uv`
+
+`uv` fetches a suitable Python itself — no `pip`, no virtualenv, and no
+pre-installed Python.
 
 ```bash
 # Linux / macOS
@@ -31,47 +41,92 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # macOS (alternative, via Homebrew)
 brew install uv
+```
 
-# Windows PowerShell
+```powershell
+# Windows (PowerShell)
 winget install --id=astral-sh.uv
 ```
 
 Confirm it is on your PATH with `uv --version`.
 
-**1. Clone**
+### 2. Get the tool
 
 ```bash
 git clone https://github.com/CountElqyd/netcheck.git
 cd netcheck
 ```
 
-**2. Wired LAN + switch management address.** Checks 1–4 use the wired NIC's
-`192.168.1.x` address; checks 5–9 need a `10.90.90.x` address. netcheck
-auto-detects the wired NIC (the one holding `192.168.1.x` or `10.90.90.x`) —
-Wi-Fi can stay connected and keeps the default route. Before checks 5–9, if the
-`10.90.90.x` address is missing, netcheck prints the exact command to add
-`10.90.90.100/24` to that NIC and **stops before the switch checks**. Add the
-address, then run netcheck again.
+(Or just download the single `netcheck.py` — nothing else is required to run it.)
 
-To set it up manually instead (or force the NIC), use `lan_interface` in
-`netcheck.ini` and run e.g. `sudo ip addr add 10.90.90.100/24 dev eth0`.
+### 3. Wired LAN + switch-management address
 
-**3. Configure** (secrets stay out of git — the real file is gitignored)
+Checks 1–4 use the wired NIC's `192.168.1.x` address; checks 5–10 need a
+`10.90.90.x` address on the same NIC. netcheck auto-detects the wired NIC (the one
+holding `192.168.1.x` or `10.90.90.x`), so Wi-Fi can stay connected and keeps the
+default route. If the `10.90.90.x` address is missing, netcheck prints the exact
+command for your OS and **stops before the switch checks** — add the address, then
+run netcheck again. To do it by hand (or to force a NIC), use the commands below;
+set `lan_interface` in `netcheck.ini` if the NIC name differs.
 
 ```bash
-cp netcheck.ini.example netcheck.ini    # set snmp_community for the switch audit
+# Linux  (replace eth0 with your wired NIC)
+sudo ip addr add 10.90.90.100/24 dev eth0
 ```
 
-**4. Run every check**
+```bash
+# macOS  (replace en0 with your wired NIC)
+sudo ifconfig en0 alias 10.90.90.100 255.255.255.0
+```
+
+```powershell
+# Windows (run PowerShell as Administrator; replace "Ethernet" with the adapter name)
+netsh interface ipv4 add address "Ethernet" 10.90.90.100 255.255.255.0
+```
+
+### 4. Configure
+
+Secrets stay out of git — the real file is gitignored.
 
 ```bash
+cp netcheck.ini.example netcheck.ini    # set snmp_community for checks 8-9
+```
+
+### 5. Run
+
+```bash
+uv run --with scapy netcheck.py                 # default run, checks 1-7
+uv run --with scapy netcheck.py --inventory     # only check 8
+uv run --with scapy netcheck.py --hardening     # only check 9
+uv run --with scapy netcheck.py --sample 300    # only check 10
+```
+
+`--with scapy` enables the rogue-DHCP probe (check 6). Without `scapy` or the
+needed rights, check 6 reports `WARN: not tested` and prints the exact command to
+enable it; run `uv run netcheck.py` to skip the probe. On Python 3.10+ you can use
+`python3 netcheck.py` instead of `uv run`.
+
+### Check 6 (rogue DHCP) — exact command
+
+The probe crafts DHCP packets, which needs `scapy` **and** raw-socket rights. Use
+one of these:
+
+```bash
+# Linux / macOS: sudo strips uv from PATH, so re-inject it with env
+sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py
+
+# Linux alternative: grant the Python binary raw-socket capability once,
+# then run normally (no sudo) afterward
+sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"
+```
+
+```powershell
+# Windows: open PowerShell as Administrator, then run normally
 uv run --with scapy netcheck.py
 ```
 
-`--with scapy` enables the rogue-DHCP probe (check 6) and needs admin/root. Without
-admin/root or `scapy`, check 6 reports `WARN: not tested`; run
-`uv run netcheck.py` to skip it. On Python 3.10+ you can use
-`python3 netcheck.py` instead.
+If neither is set up, check 6 prints `WARN: not tested` with this same command in
+its suggested fix.
 
 ## What it checks
 
@@ -84,14 +139,17 @@ admin/root or `scapy`, check 6 reports `WARN: not tested`; run
 | 5 | Switches | Pings all five management IPs |
 | 6 | Rogue DHCP | scapy broadcast discover; flags any non-gateway responder |
 | 7 | Loop/storm hints | LBD loop ports + gateway loss/jitter |
-| 8 | Device inventory | **Opt-in** (`--inventory`): SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports are hidden) |
+| 8 | Device inventory | **Opt-in** (`--inventory`): SNMP FDB walk per switch; lists end devices on access ports (uplink/trunk ports hidden, the host's own NIC tagged `this host`) |
 | 9 | Hardening audit | **Opt-in** (`--hardening`): read-only per-switch audit vs the hardening baseline |
 | 10 | Storm thresholds | **Opt-in** (`--sample SECONDS`): per-switch storm-threshold recommendations |
 
-Opt-in checks run alone: passing `--inventory`, `--hardening`, and/or `--sample`
-skips the default 1-7 suite and prints only the requested check(s).
+**Opt-in checks run alone.** Passing `--inventory`, `--hardening`, and/or
+`--sample` skips the default 1–7 suite and prints only the requested check(s); the
+flags combine and run in numeric order. Because check 8 runs alone it does not see
+check 6's result, so to locate a rogue responder, match the MAC that check 6 prints
+against the check 8 table.
 
-Exit codes: `0` clean, `1` at least one `WARN`, `2` at least one `FAIL`. The
+**Exit codes:** `0` clean, `1` at least one `WARN`, `2` at least one `FAIL`. The
 operator guide lists every check's exact criteria, the sample output, scenario
 playbooks, flags, and the manual hardening settings.
 

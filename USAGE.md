@@ -256,9 +256,22 @@ exact command to add `10.90.90.100/24` as a secondary address and **stops before
 the switch checks**. Add the address, then run netcheck again.
 `--remove-mgmt-ip` removes a leftover transient address and exits.
 
-To add it manually instead, on Linux run `sudo ip addr add 10.90.90.100/24 dev
-eth0` (replace `eth0`; macOS: `sudo ifconfig en0 alias 10.90.90.100
-255.255.255.0`).
+To add it manually instead, use your OS (replace the interface/adapter name):
+
+```bash
+# Linux  (replace eth0)
+sudo ip addr add 10.90.90.100/24 dev eth0
+```
+
+```bash
+# macOS  (replace en0)
+sudo ifconfig en0 alias 10.90.90.100 255.255.255.0
+```
+
+```powershell
+# Windows (PowerShell as Administrator; replace "Ethernet")
+netsh interface ipv4 add address "Ethernet" 10.90.90.100 255.255.255.0
+```
 
 Verify with a ping to one switch management IP before running the tool.
 
@@ -271,7 +284,22 @@ Verify with a ping to one switch management IP before running the tool.
 | `pysnmp` | SNMP v3 only | Optional; the built-in client speaks v1/v2c |
 
 On Linux/macOS, if you cannot run as root, grant the interpreter raw-socket
-capability: `sudo setcap cap_net_raw+ep $(command -v python3)`.
+capability: `sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"`.
+
+The exact check-6 invocations:
+
+```bash
+# Linux / macOS: sudo strips uv from PATH, so re-inject it with env
+sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py
+
+# Linux alternative: grant the capability once, then run normally (no sudo)
+sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"
+```
+
+```powershell
+# Windows: run PowerShell as Administrator, then run normally
+uv run --with scapy netcheck.py
+```
 
 Without raw-socket rights (or without `scapy`), check 6 reports `WARN: not tested`
 with the exact reason — the rest of the tool still works.
@@ -637,11 +665,26 @@ py netcheck.py
 ### 6.3 Optional: `uv` (no pre-installed Python)
 
 `uv run` works from either the cloned directory or alongside a downloaded
-`netcheck.py`:
+`netcheck.py`. Install it once — it fetches a suitable Python itself.
+
+```bash
+# Linux / macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# macOS (alternative, via Homebrew)
+brew install uv
+```
+
+```powershell
+# Windows (PowerShell)
+winget install --id=astral-sh.uv
+```
+
+Confirm it is on your PATH with `uv --version`, then:
 
 ```bash
 uv run netcheck.py                       # uv fetches a suitable Python
-uv run --with scapy netcheck.py          # + rogue-DHCP probe
+uv run --with scapy netcheck.py          # + rogue-DHCP probe (see §3.4)
 uv run --with pysnmp netcheck.py         # + SNMP v3
 ```
 
@@ -822,12 +865,9 @@ else writes to the system, the switches, or the router.
   guessing. Widen the view ([§4.3](#43-enable-snmp-read-only) step 3) and confirm
   with `snmpget -v2c -c <community> <switch> 1.3.6.1.4.1.171.10.76.20.1.1.8.0`.
 - **Check 6 WARN "not tested: ...".** The detail names the reason (`scapy not
-  installed`, `raw sockets denied`, ...). Install `scapy`
-  (`uv run --with scapy netcheck.py`) and grant raw-socket rights: run as
-  root/administrator (`sudo -E env "PATH=$PATH" uv run --with scapy netcheck.py`), or on Linux
-  grant the interpreter the capability once
-  (`sudo setcap cap_net_raw+ep "$(readlink -f "$(command -v python3)")"`), or
-  accept the WARN. See [§3.4](#34-privileges-and-optional-tools).
+  installed`, `raw sockets denied`, ...). Install `scapy` and grant raw-socket
+  rights — see the exact commands in [§3.4](#34-privileges-and-optional-tools),
+  or accept the WARN.
 - **Check 6 WARN "no DHCP server answered on this segment".** The probe is an active
   broadcast DISCOVER sent with the wired NIC's real MAC, so it does not depend on a
   client renewing. No OFFER means no DHCP server/relay serves that VLAN, or the server

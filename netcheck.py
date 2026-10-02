@@ -138,7 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quick", action="store_true", help="checks 1-4 only")
     parser.add_argument("--log", action="store_true", help="save a timestamped report")
     parser.add_argument("--config", default="netcheck.ini", help="path to an INI config file")
-    parser.add_argument("--no-fix", action="store_true", help="never prompt for fixes")
     parser.add_argument("--sample", type=_positive_float, default=None, metavar="SECONDS",
                         help="sample storm counters and print per-switch threshold "
                              "recommendations (also feeds --hardening)")
@@ -199,8 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     reporter = Reporter(color=not args.no_color and sys.stdout.isatty())
     try:
         run_all(cfg, reporter, quick=args.quick, sample=args.sample,
-                hardening=args.hardening, allow_fix=not args.no_fix,
-                verbose=args.verbose)
+                hardening=args.hardening, verbose=args.verbose)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -1856,31 +1854,6 @@ def format_threshold_samples(measured: dict[str, dict]) -> CheckResult:
                        detail="set Threshold (64Kbps x N): " + "; ".join(lines))
 
 
-from typing import TextIO
-
-
-def open_tty() -> TextIO | None:
-    if not sys.stdin.isatty():
-        return None
-    try:
-        return open("/dev/tty", "r+") if sys.platform != "win32" else open("CONIN$", "r+")
-    except OSError:
-        return None
-
-
-def prompt_yes_no(question: str, tty=None) -> bool:
-    stream = tty
-    if stream is None:
-        stream = open_tty()
-    if stream is None:
-        return False
-    if getattr(stream, "isatty", None) is not None and stream.isatty():
-        stream.write(question + " [y/N] ")
-        stream.flush()
-    answer = stream.readline()
-    return answer.strip().lower() in ("y", "yes")
-
-
 @dataclass
 class MgmtAddressResult:
     added: bool
@@ -1950,39 +1923,6 @@ def remove_mgmt_address(cfg: Config, iface: str, runner=run_command) -> None:
     runner(mgmt_del_argv(iface, addr))
 
 
-def dns_servers(cfg: Config) -> tuple[str, str]:
-    return "1.1.1.1", "8.8.8.8"
-
-
-def apply_fixes(cfg: Config, allow_fix: bool = True, tty=None,
-                runner=run_command) -> list[str]:
-    applied: list[str] = []
-    if not allow_fix:
-        return applied
-    if prompt_yes_no("Flush the DNS cache?", tty=tty):
-        if sys.platform.startswith("win"):
-            runner(["ipconfig", "/flushdns"])
-        elif sys.platform == "darwin":
-            runner(["dscacheutil", "-flushcache"])
-            runner(["killall", "-HUP", "mDNSResponder"])
-        else:
-            runner(["resolvectl", "flush-caches"])
-        applied.append("flushed DNS cache")
-    if prompt_yes_no("Renew the DHCP lease?", tty=tty):
-        if sys.platform.startswith("win"):
-            runner(["ipconfig", "/renew"])
-        elif sys.platform == "darwin":
-            runner(["ipconfig", "set", "en0", "DHCP"])
-        else:
-            runner(["dhclient", "-r"])
-            runner(["dhclient"])
-        applied.append("renewed DHCP lease")
-    primary, secondary = dns_servers(cfg)
-    if prompt_yes_no(f"Set this PC's DNS to {primary}/{secondary}?", tty=tty):
-        applied.append(f"requested DNS change to {primary}/{secondary}")
-    return applied
-
-
 def format_command(argv: list[str], platform: str | None = None) -> str:
     """Render an argv list for display (never for execution)."""
     platform = platform or sys.platform
@@ -2005,8 +1945,7 @@ def _report_mgmt(result: MgmtAddressResult) -> None:
 
 def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             sample: float | None = None, hardening: bool = False,
-            allow_fix: bool = True, tty=None, runner=run_command,
-            verbose: bool = False, lan=None) -> None:
+            runner=run_command, verbose: bool = False, lan=None) -> None:
     def _run_check(check_id: int, title: str, fn) -> None:
         _diag(cfg, f"check {check_id}: {title}")
         try:
@@ -2033,8 +1972,6 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
     source_for = lan.source_for if lan is not None else (lambda dst: None)
     _diag(cfg, f"lan_interface={lan.name} ({lan.primary_ip})" if lan
                else "lan_interface=none")
-    added_mgmt = False
-    mgmt_iface: str | None = None
 
     try:
         layer_ping = lambda host, **kw: ping(host, runner=runner,  # noqa: E731
@@ -2050,14 +1987,14 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
             return
 
         mgmt = ensure_mgmt_address(cfg, lan)
-        added_mgmt = mgmt.added
-        mgmt_iface = mgmt.interface
         _report_mgmt(mgmt)
-        if mgmt.added:
-            refreshed = resolve_lan_interface(cfg, runner)
-            if refreshed is not None:
-                lan = refreshed
-                source_for = lan.source_for
+        if lan is not None and mgmt.detail != "present":
+            reporter.add(CheckResult(
+                5, "Switches", Status.WARN,
+                detail=f"not run: {mgmt.address}/24 is not on {mgmt.interface}",
+                likely_cause="The laptop has no address on the switch-management LAN.",
+                suggested_fix="Add the address shown above, then run netcheck again."))
+            return
 
         _run_check(5, "Switches",
                    lambda: reporter.add(check_switches(cfg, ping_fn=layer_ping)))
@@ -2071,13 +2008,18 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
         _run_check(6, "Rogue DHCP", _rogue)
 
-        if sample is not None:
-            def _sample_only() -> None:
-                measured = measure_storm_threshold(
-                    cfg, sample_seconds=sample,
-                    source=source_for("10.90.90.90"))
-                reporter.add(format_threshold_samples(measured))
-            _run_check(10, "Storm thresholds", _sample_only)
+        def _inventory() -> None:
+            reporter.add(check_device_inventory(
+                cfg, rogue_macs, source=source_for("10.90.90.90")))
+
+        _run_check(7, "Device inventory", _inventory)
+
+        def _storm() -> None:
+            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
+                                runner=runner, source=source_for(cfg.gateway))
+            reporter.add(check_storm_hints(cfg, gateway_ping))
+
+        _run_check(8, "Loop/storm hints", _storm)
 
         if hardening:
             def _hardening() -> None:
@@ -2090,36 +2032,20 @@ def run_all(cfg: Config, reporter: Reporter, quick: bool = False,
 
             _run_check(9, "Hardening audit", _hardening)
 
-        def _storm() -> None:
-            gateway_ping = ping(cfg.gateway, count=4, timeout=cfg.timeout,
-                                runner=runner, source=source_for(cfg.gateway))
-            reporter.add(check_storm_hints(cfg, gateway_ping))
-
-        _run_check(8, "Loop/storm hints", _storm)
-
-        def _inventory() -> None:
-            reporter.add(check_device_inventory(
-                cfg, rogue_macs, source=source_for("10.90.90.90")))
-
-        _run_check(7, "Device inventory", _inventory)
-
-        fixed = apply_fixes(cfg, allow_fix=allow_fix, tty=tty, runner=runner)
-        if fixed:
-            reporter.add(CheckResult(99, "Fixes applied", Status.PASS,
-                                     detail="; ".join(fixed)))
-    except Exception as exc:  # noqa: BLE001 - last-resort guard (Phase A, fixes)
+        if sample is not None:
+            def _sample_only() -> None:
+                measured = measure_storm_threshold(
+                    cfg, sample_seconds=sample,
+                    source=source_for("10.90.90.90"))
+                reporter.add(format_threshold_samples(measured))
+            _run_check(10, "Storm thresholds", _sample_only)
+    except Exception as exc:  # noqa: BLE001 - last-resort guard
         if verbose:
             import traceback
             traceback.print_exc()
         reporter.add(CheckResult(98, "Internal error", Status.WARN, detail=str(exc),
                                  likely_cause="An unexpected error interrupted the checks.",
                                  suggested_fix="Re-run with --verbose for details."))
-    finally:
-        try:
-            if added_mgmt and mgmt_iface:
-                remove_mgmt_address(cfg, mgmt_iface, runner=runner)
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

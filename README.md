@@ -130,6 +130,10 @@ uv run netcheck.py
 If neither is set up, check 6 prints `WARN: not tested` with this same command in
 its suggested fix.
 
+![Sample netcheck output](assets/netcheck-output.png)
+
+![Sample netcheck --inventory output](assets/network-inventory.png)
+
 ## What it checks
 
 | # | Check | What it does |
